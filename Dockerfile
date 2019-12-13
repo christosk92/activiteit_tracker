@@ -12,7 +12,7 @@ WORKDIR "/src/."
 RUN dotnet build "ActTracker.csproj" -c Release -o /app/build
 
 FROM build AS publish
-RUN dotnet publish "ActTracker.csproj" -c Release -o /app/publish
+RUN dotnet publish "ActTracker.csproj" -c Release -o /app/publish -r linux-arm
 
 FROM base AS final
 WORKDIR /app
