@@ -4,4 +4,5 @@ steps:
     containerRegistry: 'DockerHub-Chris'
     repository: 'christosk92/atracker'
     command: 'buildAndPush'
+    tags: 'latest'
     Dockerfile: '**/Dockerfile'
