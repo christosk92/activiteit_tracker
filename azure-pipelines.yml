@@ -1,0 +1,6 @@
+- task: Docker@2
+  inputs:
+    containerRegistry: 'DockerHub-Chris'
+    repository: 'christosk92/atracker'
+    command: 'buildAndPush'
+    Dockerfile: '**/Dockerfile'
