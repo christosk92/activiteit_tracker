@@ -11,10 +11,11 @@ using Microsoft.ML;
 using System.Linq;
 using PLplot;
 using System.Collections.Generic;
+using System.Collections.ObjectModel;
 
 namespace ActTracker
 {
-    class Gyroscope
+    class IMU
     {
         public class AccelerationRecord
         {
@@ -85,6 +86,36 @@ namespace ActTracker
             IEnumerable<AccelerationRecord> enumerableData = new List<AccelerationRecord>();
             return mlContext.Data.LoadFromEnumerable(enumerableData);
         }
+        public struct Measurement
+        {
+            private double variance;
+            public double Value { get; set; }
+            public string Time { get; set; }
+            public double Variance
+            {
+                get
+                {
+                    return variance;
+                }
+                set
+                {
+                    variance = value;
+                    UpperDeviation = Value + Math.Sqrt(variance);
+                    LowerDeviation = Value - Math.Sqrt(variance);
+                }
+            }
+            public double UpperDeviation { get; private set; }
+            public double LowerDeviation { get; private set; }
+        }
+        private static Random rnd = new Random();
+
+        public static double[] SineWave(int iteration)
+        {
+            return new[] { Math.Sin(iteration * 3.14 * 5 / 180) + (double)rnd.Next(50) / 100 };
+        }
+        public static ObservableCollection<Measurement> Measurements { get; set; }
+        public static ObservableCollection<Measurement> Estimates { get; set; }
+
         static void Main(string[] args)
         {
             MLContext mlContext = new MLContext();
@@ -100,15 +131,15 @@ namespace ActTracker
             pl.spal0("cmap0_alternate.pal");    // alternate color palette
             pl.init();
             pl.env(
-                0, 36,                          // x-axis range
-                -10, 15,                         // y-axis range
-                AxesScale.Independent,          // scale x and y independently
-                AxisBox.BoxTicksLabelsAxes);    // draw box, ticks, and num ticks
+                 0, 5,                          // x-axis range
+                 -10, 15,                         // y-axis range
+                 AxesScale.Independent,          // scale x and y independently
+                 AxisBox.BoxTicksLabelsAxes);    // draw box, ticks, and num ticks
             pl.lab(
                 "t: s",                         // x-axis label
                 "Y: m/s^2",                        // y-axis label
                 "Y-Acceleration");     // plot title
-            pl.line(
+           /* pl.line(
                 (from x in Yacceleration select (double)Convert.ToDouble(x.time)).ToArray(),
                 (from p in Yacceleration select (double)p.accx).ToArray()
             );
@@ -122,10 +153,38 @@ namespace ActTracker
                 (from s in pepega select (double)Convert.ToDouble(s.Time)).ToArray(),
                 (from s in pepega select (double)s.Acceleration).ToArray(),
                 "!");
+                */
+            Measurements = new ObservableCollection<Measurement>();
+            Estimates = new ObservableCollection<Measurement>();
+
+            var filter = new UKF();
+            var N = Yacceleration.Count;
+
+
+            for (int k = 0; k < N; k++)
+            {
+                double[] z = { Yacceleration[k].accx };
+                filter.Update(z);
+                var state = filter.getState();
+                var covariance = filter.getCovariance();
+
+                Measurements.Add(new Measurement() { Value = z[0], Time = Yacceleration[k].time });
+                Estimates.Add(new Measurement() { Value = state[0], Time = Yacceleration[k].time, Variance = covariance[0, 0] });
+            }
+
+            pl.line(
+               (from t in Estimates select (double)Convert.ToDouble(t.Time)).ToArray(),
+               (from y in Estimates select (double)y.Value).ToArray()
+           ); 
+            pl.col0(2);
+            pl.line(
+              (from t in Measurements select (double)Convert.ToDouble(t.Time)).ToArray(),
+              (from y in Measurements select (double)y.Value).ToArray()
+          );
             pl.eop();
 
 
         }
-  
+
     }
 }
