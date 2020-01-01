@@ -8,15 +8,21 @@ using MathNet.Numerics.LinearAlgebra.Factorization;
 using System;
 using System.Collections.Generic;
 using PLplot;
+using Accord;
+using MathNet.Numerics.Integration;
+using Accord.Statistics.Models.Regression.Fitting;
+using Accord.Math.Optimization;
+using Accord.Statistics.Kernels;
+using Accord.Math;
 
 namespace ActTracker
 {
     public class SensorData
     {
         [LoadColumn(0)]
-        public string Time;
+        public double Time;
 
-        [LoadColumn(1)]
+        [LoadColumn(3)]
         public double Acceleration_x;
     }
     public class SensorDataPrediction
@@ -25,11 +31,72 @@ namespace ActTracker
         [VectorType(3)]
         public double[] Prediction { get; set; }
     }
-
+    public class Sensor
+    {
+        public double Time;
+        public double Data;
+    }
+  
     class IMU
     {
+        public static double[] Butterworth(double[] indata, double deltaTimeinsec, double CutOff)
+        {
+            if (indata == null) return null;
+            if (CutOff == 0) return indata;
 
-        static readonly string _dataPath = Path.Combine(Environment.CurrentDirectory, "acceleration_only.csv");
+            double Samplingrate = 1 / deltaTimeinsec;
+            long dF2 = indata.Length - 1;        // The data range is set with dF2
+            double[] Dat2 = new double[dF2 + 4]; // Array with 4 extra points front and back
+            double[] data = indata; // Ptr., changes passed data
+
+            for (long r = 0; r < dF2; r++)
+            {
+                Dat2[2 + r] = indata[r];
+            }
+            Dat2[1] = Dat2[0] = indata[0];
+            Dat2[dF2 + 3] = Dat2[dF2 + 2] = indata[dF2];
+
+            const double pi = 3.14159265358979;
+            double wc = Math.Tan(CutOff * pi / Samplingrate);
+            double k1 = Math.Sqrt(2) * wc;
+            double k2 = wc * wc;
+            double a = k2 / (1 + k1 + k2);
+            double b = 2 * a;
+            double c = a;
+            double k3 = b / k2;
+            double d = -2 * a + k3;
+            double e = 1 - (2 * a) - k3;
+
+            // RECURSIVE TRIGGERS - ENABLE filter is performed (first, last points constant)
+            double[] DatYt = new double[dF2 + 4];
+            DatYt[1] = DatYt[0] = indata[0];
+            for (long s = 2; s < dF2 + 2; s++)
+            {
+                DatYt[s] = a * Dat2[s] + b * Dat2[s - 1] + c * Dat2[s - 2]
+                           + d * DatYt[s - 1] + e * DatYt[s - 2];
+            }
+            DatYt[dF2 + 3] = DatYt[dF2 + 2] = DatYt[dF2 + 1];
+
+            // FORWARD filter
+            double[] DatZt = new double[dF2 + 2];
+            DatZt[dF2] = DatYt[dF2 + 2];
+            DatZt[dF2 + 1] = DatYt[dF2 + 3];
+            for (long t = -dF2 + 1; t <= 0; t++)
+            {
+                DatZt[-t] = a * DatYt[-t + 2] + b * DatYt[-t + 3] + c * DatYt[-t + 4]
+                            + d * DatZt[-t + 1] + e * DatZt[-t + 2];
+            }
+
+            // Calculated points copied for return
+            for (long p = 0; p < dF2; p++)
+            {
+                data[p] = DatZt[p];
+            }
+
+            return data;
+        }
+
+        static readonly string _dataPath = Path.Combine(Environment.CurrentDirectory, "rawdata.csv");
 
         public static long? _docsize = 0;
         private static System.Timers.Timer aTimer;
@@ -38,22 +105,101 @@ namespace ActTracker
         {
             MLContext mlContext = new MLContext();
             IDataView dataView = mlContext.Data.LoadFromTextFile<SensorData>(path: _dataPath, hasHeader: true, separatorChar: ',');
-            var accelerations = mlContext.Data.CreateEnumerable<SensorData>(dataView, reuseRowObject: false).ToList();                
-            var filter = new KalmanFilter();
-            List<double> measurements = new List<double>();
-            List<double> states = new List<double>();
-            Random rnd = new Random();
+            var accelerations = mlContext.Data.CreateEnumerable<SensorData>(dataView, reuseRowObject: false).ToList();
+            var time = accelerations.Select(x => x.Time).ToList();
+            List<Sensor> sensordata = new List<Sensor>();
 
-            for (int k = 0; k < accelerations.Count; k++)
+            var filteredAcceleration = Butterworth(accelerations.Select(x => x.Acceleration_x).ToArray(), 0.01, 1);
+            exportdata(filteredAcceleration.ToList(), "butterworth");
+
+        }
+        static List<double> Derivative(List<Sensor> args)
+        {
+            List<double> jp = new List<double>();
+            //f'(x) =  lim x--> 0 f(x+h)-f(x)/h
+            for(int i = 0; i < args.Count; i++)
             {
-                measurements.Add(accelerations[k].Acceleration_x);
-                filter.Update(new[] { accelerations[k].Acceleration_x });
-                states.Add(filter.getState()[0]);
+                if (i != 0)
+                {
+                    var dt = args[i].Time - args[i-1].Time;
+                    if (dt != 0)
+                    {
+                        //dy/dt
+                        var res = (args[i].Data - args[i - 1].Data) / dt;
+                        if (Math.Round(res, 2) == 0.34)
+                        {
+                            Console.WriteLine("f");
+                        }
+                        jp.Add(res);
+                    }
+                    else
+                    {
+                        Console.Write("");
+                    }
+                }
+                else
+                {
+                    jp.Add(0);
+
+                }
+            }
+            return jp;
+        }
+        private static List<Point> createPoint(List<Sensor> l)
+        {
+            List<Point> p = new List<Point>();
+            for (int k = 0; k < l.Count; k++)
+            {
+                p.Add(new Point { X = (float)l[k].Time, Y = (float)(l[k].Data) });
+            }
+            return p;
+        }
+        private static List<Sensor> function(int count)
+        {
+            var lk = new List<Sensor>();
+            for(int j = 0; j < count + 1; j++)
+            {
+                var result = j * j;
+                lk.Add(new Sensor { Data = result, Time = j });
+            }
+            return lk;
+        }
+        private static List<Sensor> Integrate(List<Point> p)
+        {
+            List<Sensor> FunctionValues = new List<Sensor>();
+            //v = v0 + a(t)dt
+            //s = s0 + v(t)dt
+            for (int i = 0; i < p.Count; i++)
+            {
+                if (i != 0)
+                {
+                    FunctionValues.Add(new Sensor { Data = (p[i].Y + p[i - 1].Y) / 2 * (p[i].X - p[i - 1].X) + FunctionValues[i - 1].Data, Time = p[i].X });
+                }
+                else
+                {
+                    FunctionValues.Add(new Sensor { Data = 0, Time = 0 });
+                }
+            }
+            return FunctionValues;
+        }
+
+        private static void exportdata(List<double> states, string name)
+        {
+            System.Text.StringBuilder sb = new System.Text.StringBuilder();
+            sb.AppendLine($"{name}");
+            foreach (var item in states)
+            {
+                sb.AppendLine(item.ToString() +",");
             }
 
+            System.IO.File.WriteAllText(
+                System.IO.Path.Combine(
+                AppDomain.CurrentDomain.BaseDirectory, $"{name}.csv"),
+                sb.ToString());
+            var test = states.Min(x => x);
             var pl = new PLStream();
             pl.sdev("pngcairo");                // png rendering
-            pl.sfnam("data.png");               // output filename
+            pl.sfnam($"{name}.png");               // output filename
             pl.spal0("cmap0_alternate.pal");    // alternate color palette
             pl.init();
             pl.env(
@@ -62,200 +208,19 @@ namespace ActTracker
                 AxesScale.Independent,          // scale x and y independently
                 AxisBox.BoxTicksLabelsAxes);    // draw box, ticks, and num ticks
             pl.lab(
-                "Poll",                         // x-axis label
-                "Acceleration",                        // y-axis label
-                "acc-x");     // plot title
+                "Sample",                         // x-axis label
+                "m/s^2",                        // y-axis label
+                "versnelling");     // plot title
             pl.line(
                 (from x in Enumerable.Range(0, states.Count()) select (double)x).ToArray(),
                 (from p in states select (double)p).ToArray()
             );
-
+            string csv = String.Join(",", states.Select(x => x.ToString()).ToArray());
             pl.eop();
+
+
         }
-        public class KalmanFilter
-        {
-            private int L;
-            private int m;
-            /// sigma-points dispersion around mean
-            private double alpha;
-            private double ki;
-            ///type of distribution
-            private double beta;
-            private double lambda;
-            private double c;
-            /// mean weights
-            private Matrix<double> Wm;
-            /// Covariance weights
-            private Matrix<double> Wc;
-            /// State
-            private Matrix<double> x;
-            /// Covariance
-            private Matrix<double> P;
-            /// Std of process 
-            private double q;
-            /// Std of measurement 
-            private double r;
-            /// Covariance of process
-            private Matrix<double> Q;
-            /// Covariance of measurement 
-            private Matrix<double> R;
-            public KalmanFilter(int L = 0)
-            {
-                this.L = L;
-            }
-
-            private void f(int w = 0)
-            {
-                q = 0.02;
-                r = 0.3;
-                x = q * Matrix.Build.Random(L, 1); 
-                P = Matrix.Build.Diagonal(L, L, 1); //initial state covraiance
-
-                Q = Matrix.Build.Diagonal(L, L, q * q); //covariance of process
-                R = Matrix.Build.Dense(m, m, r * r); //covariance of measurement  
-
-                alpha = 1e-3f;
-                ki = 0;
-                beta = 2f;
-                lambda = alpha * alpha * (L + ki) - L;
-                c = L + lambda;
-
-                //weights for means
-                Wm = Matrix.Build.Dense(1, (2 * L + 1), 0.5 / c);
-                Wm[0, 0] = lambda / c;
-
-                //weights for covariance
-                Wc = Matrix.Build.Dense(1, (2 * L + 1));
-                Wm.CopyTo(Wc);
-                Wc[0, 0] = Wm[0, 0] + 1 - alpha * alpha + beta;
-
-                c = Math.Sqrt(c);
-            }
-
-            public void Update(double[] measurements)
-            {
-                if (m == 0)
-                {
-                    var mNum = measurements.Length;
-                    if (mNum > 0)
-                    {
-                        m = mNum;
-                        if (L == 0) L = mNum;
-                        f();
-                    }
-                }
-
-                var z = Matrix.Build.Dense(m, 1, 0);
-                z.SetColumn(0, measurements);
-
-                //sigma points around x
-                Matrix<double> X = GetSigmaPoints(x, P, c);
-
-                //unscented transformation of process
-                // X1=sigmas(x1,P1,c) - sigma points around x1
-                //X2=X1-x1(:,ones(1,size(X1,2))) - deviation of X1
-                Matrix<double>[] ut_f_matrices = UnscentedTransform(X, Wm, Wc, L, Q);
-                Matrix<double> x1 = ut_f_matrices[0];
-                Matrix<double> X1 = ut_f_matrices[1];
-                Matrix<double> P1 = ut_f_matrices[2];
-                Matrix<double> X2 = ut_f_matrices[3];
-
-                //unscented transformation of measurments
-                Matrix<double>[] ut_h_matrices = UnscentedTransform(X1, Wm, Wc, m, R);
-                Matrix<double> z1 = ut_h_matrices[0];
-                Matrix<double> Z1 = ut_h_matrices[1];
-                Matrix<double> P2 = ut_h_matrices[2];
-                Matrix<double> Z2 = ut_h_matrices[3];
-
-                //transformed cross-covariance
-                Matrix<double> P12 = (X2.Multiply(Matrix.Build.Diagonal(Wc.Row(0).ToArray()))).Multiply(Z2.Transpose());
-
-                Matrix<double> K = P12.Multiply(P2.Inverse());
-
-                //state update
-                x = x1.Add(K.Multiply(z.Subtract(z1)));
-                //covariance update 
-                P = P1.Subtract(K.Multiply(P12.Transpose()));
-            }
-
-            public double[] getState()
-            {
-                return x.ToColumnArrays()[0];
-            }
-
-            public double[,] getCovariance()
-            {
-                return P.ToArray();
-            }
-
-            /// <summary>
-            /// Transformation
-            /// </summary>
-            /// <param name="f">nonlinear map</param>
-            /// <param name="X">sigma points</param>
-            /// <param name="Wm">Weights for means</param>
-            /// <param name="Wc">Weights for covariance</param>
-            /// <param name="n">numer of outputs of f</param>
-            /// <param name="R">additive covariance</param>
-            /// <returns>[transformed mean, transformed smapling points, transformed covariance, transformed deviations</returns>
-            private Matrix<double>[] UnscentedTransform(Matrix<double> X, Matrix<double> Wm, Matrix<double> Wc, int n, Matrix<double> R)
-            {
-                int L = X.ColumnCount;
-                Matrix<double> y = Matrix.Build.Dense(n, 1, 0);
-                Matrix<double> Y = Matrix.Build.Dense(n, L, 0);
-
-                Matrix<double> row_in_X;
-                for (int k = 0; k < L; k++)
-                {
-                    row_in_X = X.SubMatrix(0, X.RowCount, k, 1);
-                    Y.SetSubMatrix(0, Y.RowCount, k, 1, row_in_X);
-                    y = y.Add(Y.SubMatrix(0, Y.RowCount, k, 1).Multiply(Wm[0, k]));
-                }
-
-                Matrix<double> Y1 = Y.Subtract(y.Multiply(Matrix.Build.Dense(1, L, 1)));
-                Matrix<double> P = Y1.Multiply(Matrix.Build.Diagonal(Wc.Row(0).ToArray()));
-                P = P.Multiply(Y1.Transpose());
-                P = P.Add(R);
-
-                Matrix<double>[] output = { y, Y, P, Y1 };
-                return output;
-            }
-
-            /// <summary>
-            /// Sigma points around reference point
-            /// </summary>
-            /// <param name="x">reference point</param>
-            /// <param name="P">covariance</param>
-            /// <param name="c">coefficient</param>
-            /// <returns>Sigma points</returns>
-            private Matrix<double> GetSigmaPoints(Matrix<double> x, Matrix<double> P, double c)
-            {
-                Matrix<double> A = P.Cholesky().Factor;
-
-                A = A.Multiply(c);
-                A = A.Transpose();
-
-                int n = x.RowCount;
-
-                Matrix<double> Y = Matrix.Build.Dense(n, n, 1);
-                for (int j = 0; j < n; j++)
-                {
-                    Y.SetSubMatrix(0, n, j, 1, x);
-                }
-
-                Matrix<double> X = Matrix.Build.Dense(n, (2 * n + 1));
-                X.SetSubMatrix(0, n, 0, 1, x);
-
-                Matrix<double> Y_plus_A = Y.Add(A);
-                X.SetSubMatrix(0, n, 1, n, Y_plus_A);
-
-                Matrix<double> Y_minus_A = Y.Subtract(A);
-                X.SetSubMatrix(0, n, n + 1, n, Y_minus_A);
-
-                return X;
-            }
-        }
-
+     
         public struct Measurement
         {
             private double variance;
