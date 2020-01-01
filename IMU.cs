@@ -1,96 +1,266 @@
-﻿using Iot.Device.CpuTemperature;
-using System;
-using Microsoft.Azure.Devices.Client;
-using Newtonsoft.Json;
-using System.Text;
-using System.Threading.Tasks;
-using System.Threading;
-using Microsoft.ML.Data;
+﻿using Microsoft.ML.Data;
 using System.IO;
 using Microsoft.ML;
 using System.Linq;
-using PLplot;
+using MathNet.Numerics.LinearAlgebra;
+using MathNet.Numerics.LinearAlgebra.Double;
+using MathNet.Numerics.LinearAlgebra.Factorization;
+using System;
 using System.Collections.Generic;
-using System.Collections.ObjectModel;
+using PLplot;
 
 namespace ActTracker
 {
+    public class SensorData
+    {
+        [LoadColumn(0)]
+        public string Time;
+
+        [LoadColumn(1)]
+        public double Acceleration_x;
+    }
+    public class SensorDataPrediction
+    {
+        //vector to hold alert,score,p-value values
+        [VectorType(3)]
+        public double[] Prediction { get; set; }
+    }
+
     class IMU
     {
-        public class AccelerationRecord
+
+        static readonly string _dataPath = Path.Combine(Environment.CurrentDirectory, "acceleration_only.csv");
+
+        public static long? _docsize = 0;
+        private static System.Timers.Timer aTimer;
+        private static List<double> corrected = new List<double>();
+        static void Main(string[] args)
         {
-            [LoadColumn(0)] public string time;
-            [LoadColumn(1)] public float accx;
-        }
-        public class AccelerationPrediction
-        {
-            //vector to hold alert,score,p-value values
-            [VectorType(3)] public double[] Prediction { get; set; }
-        }
-        public class OutputSpike
-        {
-            public string time { get; set; }
-            public float acc { get; set; }
-            public override string ToString()
+            MLContext mlContext = new MLContext();
+            IDataView dataView = mlContext.Data.LoadFromTextFile<SensorData>(path: _dataPath, hasHeader: true, separatorChar: ',');
+            var accelerations = mlContext.Data.CreateEnumerable<SensorData>(dataView, reuseRowObject: false).ToList();                
+            var filter = new KalmanFilter();
+            List<double> measurements = new List<double>();
+            List<double> states = new List<double>();
+            Random rnd = new Random();
+
+            for (int k = 0; k < accelerations.Count; k++)
             {
-                return this.time + "," + this.acc.ToString();
+                measurements.Add(accelerations[k].Acceleration_x);
+                filter.Update(new[] { accelerations[k].Acceleration_x });
+                states.Add(filter.getState()[0]);
             }
+
+            var pl = new PLStream();
+            pl.sdev("pngcairo");                // png rendering
+            pl.sfnam("data.png");               // output filename
+            pl.spal0("cmap0_alternate.pal");    // alternate color palette
+            pl.init();
+            pl.env(
+                0, states.Count,                          // x-axis range
+                 states.Min(x => x), states.Max(x => x),                         // y-axis range
+                AxesScale.Independent,          // scale x and y independently
+                AxisBox.BoxTicksLabelsAxes);    // draw box, ticks, and num ticks
+            pl.lab(
+                "Poll",                         // x-axis label
+                "Acceleration",                        // y-axis label
+                "acc-x");     // plot title
+            pl.line(
+                (from x in Enumerable.Range(0, states.Count()) select (double)x).ToArray(),
+                (from p in states select (double)p).ToArray()
+            );
+
+            pl.eop();
         }
-        private static string dataPath = Path.Combine(@"D", "y.csv");
-        
-        static List<OutputSpike> DetectSpike(MLContext mlContext, int docSize, IDataView accelerationData)
+        public class KalmanFilter
         {
-            var iidSpikeEstimator = mlContext.Transforms.DetectIidSpike(outputColumnName: nameof(AccelerationPrediction.Prediction), inputColumnName: nameof(AccelerationRecord.accx), confidence: 80, pvalueHistoryLength: docSize / 4);
-            ITransformer iidSpikeTransform = iidSpikeEstimator.Fit(CreateEmptyDataView(mlContext));
-            IDataView transformedData = iidSpikeTransform.Transform(accelerationData);
-            var predictions = mlContext.Data.CreateEnumerable<AccelerationPrediction>(transformedData, reuseRowObject: false).ToList() ;
-            var date = accelerationData.GetColumn<string>("time").ToArray();
-            var value = accelerationData.GetColumn<float>("accx").ToArray();
-            List<OutputSpike> pSpikes = new List<OutputSpike>();
-            Console.WriteLine("Alert\tTime\tValue");
-            for (int i = 0; i < predictions.Count; i++)
+            private int L;
+            private int m;
+            /// sigma-points dispersion around mean
+            private double alpha;
+            private double ki;
+            ///type of distribution
+            private double beta;
+            private double lambda;
+            private double c;
+            /// mean weights
+            private Matrix<double> Wm;
+            /// Covariance weights
+            private Matrix<double> Wc;
+            /// State
+            private Matrix<double> x;
+            /// Covariance
+            private Matrix<double> P;
+            /// Std of process 
+            private double q;
+            /// Std of measurement 
+            private double r;
+            /// Covariance of process
+            private Matrix<double> Q;
+            /// Covariance of measurement 
+            private Matrix<double> R;
+            public KalmanFilter(int L = 0)
             {
-                if (predictions[i].Prediction[0] == 1)
+                this.L = L;
+            }
+
+            private void f(int w = 0)
+            {
+                q = 0.02;
+                r = 0.3;
+                x = q * Matrix.Build.Random(L, 1); 
+                P = Matrix.Build.Diagonal(L, L, 1); //initial state covraiance
+
+                Q = Matrix.Build.Diagonal(L, L, q * q); //covariance of process
+                R = Matrix.Build.Dense(m, m, r * r); //covariance of measurement  
+
+                alpha = 1e-3f;
+                ki = 0;
+                beta = 2f;
+                lambda = alpha * alpha * (L + ki) - L;
+                c = L + lambda;
+
+                //weights for means
+                Wm = Matrix.Build.Dense(1, (2 * L + 1), 0.5 / c);
+                Wm[0, 0] = lambda / c;
+
+                //weights for covariance
+                Wc = Matrix.Build.Dense(1, (2 * L + 1));
+                Wm.CopyTo(Wc);
+                Wc[0, 0] = Wm[0, 0] + 1 - alpha * alpha + beta;
+
+                c = Math.Sqrt(c);
+            }
+
+            public void Update(double[] measurements)
+            {
+                if (m == 0)
                 {
-                    var results = $"{predictions[i].Prediction[0]}\t{date[i]:f2}\t{value[i]:F2}";
-                    results += " <-- Spike detected";
-                    Console.WriteLine(results);
-                    var output = new OutputSpike
+                    var mNum = measurements.Length;
+                    if (mNum > 0)
                     {
-                        acc = value[i],
-                        time = date[i]
-                    };
-                    pSpikes.Add(output);
+                        m = mNum;
+                        if (L == 0) L = mNum;
+                        f();
+                    }
                 }
+
+                var z = Matrix.Build.Dense(m, 1, 0);
+                z.SetColumn(0, measurements);
+
+                //sigma points around x
+                Matrix<double> X = GetSigmaPoints(x, P, c);
+
+                //unscented transformation of process
+                // X1=sigmas(x1,P1,c) - sigma points around x1
+                //X2=X1-x1(:,ones(1,size(X1,2))) - deviation of X1
+                Matrix<double>[] ut_f_matrices = UnscentedTransform(X, Wm, Wc, L, Q);
+                Matrix<double> x1 = ut_f_matrices[0];
+                Matrix<double> X1 = ut_f_matrices[1];
+                Matrix<double> P1 = ut_f_matrices[2];
+                Matrix<double> X2 = ut_f_matrices[3];
+
+                //unscented transformation of measurments
+                Matrix<double>[] ut_h_matrices = UnscentedTransform(X1, Wm, Wc, m, R);
+                Matrix<double> z1 = ut_h_matrices[0];
+                Matrix<double> Z1 = ut_h_matrices[1];
+                Matrix<double> P2 = ut_h_matrices[2];
+                Matrix<double> Z2 = ut_h_matrices[3];
+
+                //transformed cross-covariance
+                Matrix<double> P12 = (X2.Multiply(Matrix.Build.Diagonal(Wc.Row(0).ToArray()))).Multiply(Z2.Transpose());
+
+                Matrix<double> K = P12.Multiply(P2.Inverse());
+
+                //state update
+                x = x1.Add(K.Multiply(z.Subtract(z1)));
+                //covariance update 
+                P = P1.Subtract(K.Multiply(P12.Transpose()));
             }
-            //save as csv
-            System.Text.StringBuilder sb = new System.Text.StringBuilder();
-            sb.AppendLine("time,acc");
-            foreach (var item in pSpikes)
+
+            public double[] getState()
             {
-                sb.AppendLine(item.ToString());
+                return x.ToColumnArrays()[0];
             }
-            string path = System.IO.Path.Combine("D", "pspikes.csv");
-            if (System.IO.File.Exists(path))
-                System.IO.File.Delete(path);
-            
-            System.IO.File.WriteAllText(
-                System.IO.Path.Combine(path),
-                sb.ToString());
-            return pSpikes;
+
+            public double[,] getCovariance()
+            {
+                return P.ToArray();
+            }
+
+            /// <summary>
+            /// Transformation
+            /// </summary>
+            /// <param name="f">nonlinear map</param>
+            /// <param name="X">sigma points</param>
+            /// <param name="Wm">Weights for means</param>
+            /// <param name="Wc">Weights for covariance</param>
+            /// <param name="n">numer of outputs of f</param>
+            /// <param name="R">additive covariance</param>
+            /// <returns>[transformed mean, transformed smapling points, transformed covariance, transformed deviations</returns>
+            private Matrix<double>[] UnscentedTransform(Matrix<double> X, Matrix<double> Wm, Matrix<double> Wc, int n, Matrix<double> R)
+            {
+                int L = X.ColumnCount;
+                Matrix<double> y = Matrix.Build.Dense(n, 1, 0);
+                Matrix<double> Y = Matrix.Build.Dense(n, L, 0);
+
+                Matrix<double> row_in_X;
+                for (int k = 0; k < L; k++)
+                {
+                    row_in_X = X.SubMatrix(0, X.RowCount, k, 1);
+                    Y.SetSubMatrix(0, Y.RowCount, k, 1, row_in_X);
+                    y = y.Add(Y.SubMatrix(0, Y.RowCount, k, 1).Multiply(Wm[0, k]));
+                }
+
+                Matrix<double> Y1 = Y.Subtract(y.Multiply(Matrix.Build.Dense(1, L, 1)));
+                Matrix<double> P = Y1.Multiply(Matrix.Build.Diagonal(Wc.Row(0).ToArray()));
+                P = P.Multiply(Y1.Transpose());
+                P = P.Add(R);
+
+                Matrix<double>[] output = { y, Y, P, Y1 };
+                return output;
+            }
+
+            /// <summary>
+            /// Sigma points around reference point
+            /// </summary>
+            /// <param name="x">reference point</param>
+            /// <param name="P">covariance</param>
+            /// <param name="c">coefficient</param>
+            /// <returns>Sigma points</returns>
+            private Matrix<double> GetSigmaPoints(Matrix<double> x, Matrix<double> P, double c)
+            {
+                Matrix<double> A = P.Cholesky().Factor;
+
+                A = A.Multiply(c);
+                A = A.Transpose();
+
+                int n = x.RowCount;
+
+                Matrix<double> Y = Matrix.Build.Dense(n, n, 1);
+                for (int j = 0; j < n; j++)
+                {
+                    Y.SetSubMatrix(0, n, j, 1, x);
+                }
+
+                Matrix<double> X = Matrix.Build.Dense(n, (2 * n + 1));
+                X.SetSubMatrix(0, n, 0, 1, x);
+
+                Matrix<double> Y_plus_A = Y.Add(A);
+                X.SetSubMatrix(0, n, 1, n, Y_plus_A);
+
+                Matrix<double> Y_minus_A = Y.Subtract(A);
+                X.SetSubMatrix(0, n, n + 1, n, Y_minus_A);
+
+                return X;
+            }
         }
 
-        static IDataView CreateEmptyDataView(MLContext mlContext)
-        {
-            // Create empty DataView. We just need the schema to call Fit() for the time series transforms
-            IEnumerable<AccelerationRecord> enumerableData = new List<AccelerationRecord>();
-            return mlContext.Data.LoadFromEnumerable(enumerableData);
-        }
         public struct Measurement
         {
             private double variance;
             public double Value { get; set; }
-            public string Time { get; set; }
+            public TimeSpan Time { get; set; }
             public double Variance
             {
                 get
@@ -107,84 +277,5 @@ namespace ActTracker
             public double UpperDeviation { get; private set; }
             public double LowerDeviation { get; private set; }
         }
-        private static Random rnd = new Random();
-
-        public static double[] SineWave(int iteration)
-        {
-            return new[] { Math.Sin(iteration * 3.14 * 5 / 180) + (double)rnd.Next(50) / 100 };
-        }
-        public static ObservableCollection<Measurement> Measurements { get; set; }
-        public static ObservableCollection<Measurement> Estimates { get; set; }
-
-        static void Main(string[] args)
-        {
-            MLContext mlContext = new MLContext();
-            IDataView dataView = mlContext.Data.LoadFromTextFile<AccelerationRecord>(path: dataPath, hasHeader: true, separatorChar: ',');
-
-            var Yacceleration = mlContext.Data.CreateEnumerable<AccelerationRecord>(dataView, reuseRowObject: false).ToList();
-
-            var predictions = DetectSpike(mlContext, Yacceleration.Count, dataView);
-
-            var pl = new PLStream();
-            pl.sdev("pngcairo");                // png rendering
-            pl.sfnam("y.png");               // output filename
-            pl.spal0("cmap0_alternate.pal");    // alternate color palette
-            pl.init();
-            pl.env(
-                 0, 5,                          // x-axis range
-                 -10, 15,                         // y-axis range
-                 AxesScale.Independent,          // scale x and y independently
-                 AxisBox.BoxTicksLabelsAxes);    // draw box, ticks, and num ticks
-            pl.lab(
-                "t: s",                         // x-axis label
-                "Y: m/s^2",                        // y-axis label
-                "Y-Acceleration");     // plot title
-           /* pl.line(
-                (from x in Yacceleration select (double)Convert.ToDouble(x.time)).ToArray(),
-                (from p in Yacceleration select (double)p.accx).ToArray()
-            );
-
-            var pepega = (from i in Enumerable.Range(0, predictions.Count())
-                          select (Time: predictions[i].time, Acceleration: predictions[i].acc));
-
-            // plot the spikes
-            pl.col0(2);     // blue color
-            pl.string2(
-                (from s in pepega select (double)Convert.ToDouble(s.Time)).ToArray(),
-                (from s in pepega select (double)s.Acceleration).ToArray(),
-                "!");
-                */
-            Measurements = new ObservableCollection<Measurement>();
-            Estimates = new ObservableCollection<Measurement>();
-
-            var filter = new UKF();
-            var N = Yacceleration.Count;
-
-
-            for (int k = 0; k < N; k++)
-            {
-                double[] z = { Yacceleration[k].accx };
-                filter.Update(z);
-                var state = filter.getState();
-                var covariance = filter.getCovariance();
-
-                Measurements.Add(new Measurement() { Value = z[0], Time = Yacceleration[k].time });
-                Estimates.Add(new Measurement() { Value = state[0], Time = Yacceleration[k].time, Variance = covariance[0, 0] });
-            }
-
-            pl.line(
-               (from t in Estimates select (double)Convert.ToDouble(t.Time)).ToArray(),
-               (from y in Estimates select (double)y.Value).ToArray()
-           ); 
-            pl.col0(2);
-            pl.line(
-              (from t in Measurements select (double)Convert.ToDouble(t.Time)).ToArray(),
-              (from y in Measurements select (double)y.Value).ToArray()
-          );
-            pl.eop();
-
-
-        }
-
     }
 }
