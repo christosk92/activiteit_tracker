@@ -95,6 +95,7 @@ namespace ActTracker
         public static long? _docsize = 0;
         private static System.Timers.Timer aTimer;
         private static List<double> corrected = new List<double>();
+        private static List<CustomBool> maxOrMins = new List<CustomBool>();
         static void Main(string[] args)
         {
             MLContext mlContext = new MLContext();
@@ -107,7 +108,7 @@ namespace ActTracker
             for (int k = 1; k < accelerations.Count; k++)
                 difference.Add(accelerations[k].Time - accelerations[k - 1].Time);
             var average = difference.Sum(x => x) / difference.Count();
-            var filteredAcceleration = Butterworth(accelerations.Select(x => x.Acceleration_x).ToArray(), average, 2.2);
+            var filteredAcceleration = Butterworth(accelerations.Select(x => x.Acceleration_x).ToArray(), average, 2);
             exportdata(filteredAcceleration.ToList(), "Versnelling", "m/s^2");
             sensordata = new List<Sensor>();
             for (int k = 0; k < filteredAcceleration.Count(); k++)
@@ -115,14 +116,12 @@ namespace ActTracker
                 sensordata.Add(new Sensor { Time = Convert.ToDouble(time[k]), Data = Convert.ToDouble(filteredAcceleration[k]) }); ;
             }
             var jerk = Derivative(sensordata);
-            consta = 1;
-            constb = jerk.Count() - 1;      
             originalDataDont = jerk.ToList();
             bisection(1, jerk.Count() - 1, jerk);
-            int threshold = 18;
-            for (int i = 0; i < foundRoots.Count - 1; i += threshold)
+
+            for (int i = 0; i < foundRoots.Count - 1; i += 15)
             {
-                var z = foundRoots.Where(x => Math.Abs(x.countInArray - i) < threshold + 1); //find all poins that are a distance 20 away from the current root.
+                var z = foundRoots.Where(x => Math.Abs(x.countInArray - i) < 15); //find all poins that are a distance 20 away from the current root.
                 if (z.Count() > 0)
                 {
                     var minValues = z.ToArray().MinBy(x => Math.Abs((double)x.FunctionValue));
@@ -131,23 +130,39 @@ namespace ActTracker
                     var existsInRealArray = arrayofroots.FindIndex(x => x == jk.countInArray);
                     if (jk.countInArray != previousRoot)
                     {
-                        arrayofroots.Add(jk.countInArray);
-                        previousRoot = jk.countInArray;
+                        int h = 3;
+                        if (((originalDataDont[jk.countInArray + h]) > 0 && (originalDataDont[jk.countInArray - h]) < 0) || ((originalDataDont[jk.countInArray + h]) < 0 && (originalDataDont[jk.countInArray - h]) > 0))
+                        {
+                            arrayofroots.Add(jk.countInArray);
+                            bool max = false;
+                            if ((originalDataDont[jk.countInArray + h]) > 0 && (originalDataDont[jk.countInArray - h]) < 0)
+                                max = false;
+                            else
+                                max = true;
+                            maxOrMins.Add(new CustomBool { index = jk.countInArray, Max = max});
+                            previousRoot = jk.countInArray;
+                        }
                     }
                 }
             }
-            foreach (var k in arrayofroots)
+
+            foreach (var k in maxOrMins.Distinct())
             {
                 //find value in the array...
-                Console.WriteLine(k + " is a unique root");
+                string type = "";
+                if (k.Max)
+                    type = "Maximum";
+                else
+                    type = "Minimum";
+                Console.WriteLine($"Sample {k.index} is a {type}");
             }
             jerk = Derivative(sensordata);
-            exportdata(jerk.ToList(), "Jerk", "m/s^3", arrayofroots.ToList());
+            exportdata(jerk.ToList(), "Jerk", "m/s^3", arrayofroots.Distinct().ToList());
             var velocity = Integrate(createPoint(sensordata));
             var filteredVelocity = Butterworth(velocity.Select(x => x.Data).ToArray(), average, 0.1);
             exportdata(filteredVelocity.ToList(), "Velocity", "m/s");
 
-            exportdata(filteredAcceleration.ToList(), "Versnelling", "m/s^2", arrayofroots.ToList());
+            exportdata(filteredAcceleration.ToList(), "Versnelling", "m/s^2", arrayofroots.Distinct().ToList());
 
             sensordata = new List<Sensor>();
             for (int k = 0; k < filteredVelocity.Count(); k++)
@@ -158,17 +173,19 @@ namespace ActTracker
             var filteredDistance = Butterworth(distance.Select(x => x.Data).ToArray(), average, 0.1);
             exportdata(filteredDistance.ToList(), "Position", "m");
         }
+        public class CustomBool
+        {
+            public double index { get; set; }
+            public bool Max { get; set; }
+        }
         static float EPSILON = (float)0.0001;
 
         static List<int> arrayofroots = new List<int>();
         static List<CustomDouble> foundRoots = new List<CustomDouble>();
         static int previousRoot = 0;
-        static double consta = 0.0;
         static List<Double> originalDataDont = new List<double>();
-
-        static double constb = 0.0;
         static void bisection(double a,
-                              double b, List<Double> data)
+                           double b, List<Double> data)
         {
             var actualOriginal = a; // dont change
             var actualOriginalB = b; // dont change
@@ -183,9 +200,9 @@ namespace ActTracker
                 {
                     if (j * k >= 0)
                     {
-                        j = data[(int)Math.Round(originalA+1, 0)];
-                        k = data[(int)Math.Round(originalB , 0)];
-                        originalA += 1;
+                        j = data[(int)Math.Round(originalA, 0)];
+                        k = data[(int)Math.Round(originalB - 1, 0)];
+                        originalB -= 1;
                     }
                     else
                         invalidRoot = false;
@@ -318,7 +335,7 @@ namespace ActTracker
                 (from x in Enumerable.Range(0, states.Count()) select (double)x).ToArray(),
                 (from p in states select (double)p).ToArray()
             );
-            if(second != null)
+            if (second != null)
             {
                 pl.col0(4);
                 var Roots = GetListFromIndices(second, states);
@@ -337,7 +354,7 @@ namespace ActTracker
         static List<double> GetListFromIndices(List<int> indices, List<double> source)
         {
             List<double> toREturn = new List<double>();
-            foreach(var k in indices)
+            foreach (var k in indices)
             {
                 toREturn.Add(source[k]);
             }
