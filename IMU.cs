@@ -145,7 +145,7 @@ namespace ActTracker
                     }
                 }
             }
-
+            List<CustomDouble2> Force = new List<CustomDouble2>();
             foreach (var k in maxOrMins.Distinct())
             {
                 //find value in the array...
@@ -155,7 +155,17 @@ namespace ActTracker
                 else
                     type = "Minimum";
                 Console.WriteLine($"Sample {k.index} is a {type}");
+            } 
+            //F = ma... 
+            double m = 80;
+            for (int j = 0; j < maxOrMins.Count - 1; j++)
+            {
+                if (maxOrMins[j].Max)
+                {
+                    Force.Add(new CustomDouble2 { countEnd = (int)maxOrMins[j + 1].index, countStart = (int)maxOrMins[j].index, Value = m * (filteredAcceleration.ToList()[(int)maxOrMins[j + 1].index] - filteredAcceleration.ToList()[(int)maxOrMins[j].index]) });
+                }
             }
+
             jerk = Derivative(sensordata);
             exportdata(jerk.ToList(), "Jerk", "m/s^3", arrayofroots.Distinct().ToList());
             var velocity = Integrate(createPoint(sensordata));
@@ -170,6 +180,20 @@ namespace ActTracker
                 sensordata.Add(new Sensor { Time = Convert.ToDouble(time[k]), Data = Convert.ToDouble(filteredVelocity[k]) }); ;
             }
             var distance = Integrate(createPoint(sensordata));
+
+            List<double> WorkDone = new List<double>();
+            for (int k = 0; k < Force.Count; k++)
+            {
+                //b-a on a time interval...
+                //Polling frequency = 100 Hz --> 1 sample = 0.01s
+                var PositionB = distance[Force[k].countEnd].Data;
+                var PositionA = distance[Force[k].countStart].Data;
+                WorkDone.Add(Math.Abs(Force[k].Value) * Math.Abs((PositionB - PositionA)));
+            }
+            //1 J = 0.000239 KCal
+            //x J = y kCal
+            //y = x * 0.000239 / 1
+            Console.WriteLine("Work done: " + WorkDone.Sum(x => x) * 0.000239 + " KCal");
             var filteredDistance = Butterworth(distance.Select(x => x.Data).ToArray(), average, 0.1);
             exportdata(filteredDistance.ToList(), "Position", "m");
         }
@@ -181,7 +205,9 @@ namespace ActTracker
         static float EPSILON = (float)0.0001;
 
         static List<int> arrayofroots = new List<int>();
+
         static List<CustomDouble> foundRoots = new List<CustomDouble>();
+
         static int previousRoot = 0;
         static List<Double> originalDataDont = new List<double>();
         static void bisection(double a,
@@ -244,6 +270,12 @@ namespace ActTracker
         {
             public int countInArray { get; set; }
             public double FunctionValue { get; set; }
+        }
+        class CustomDouble2
+        {
+            public int countStart { get; set; }
+            public int countEnd { get; set; }
+            public double Value { get; set; }
         }
         static List<double> Derivative(List<Sensor> args)
         {
