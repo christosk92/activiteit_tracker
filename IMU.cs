@@ -115,17 +115,36 @@ namespace ActTracker
                 sensordata.Add(new Sensor { Time = Convert.ToDouble(time[k]), Data = Convert.ToDouble(filteredAcceleration[k]) }); ;
             }
             var jerk = Derivative(sensordata);
-            exportdata(jerk.ToList(), "Jerk", "m/s^3");
-            bisection(0, jerk.Count() - 1, jerk);
+            originalDataDont = jerk.ToList();
+            bisection(1, jerk.Count() - 1, jerk);
+            for (int i = 0; i < foundRoots.Count - 1; i += 17)
+            {
+                var z = foundRoots.Where(x => Math.Abs(x.countInArray - i) < 17); //find all poins that are a distance 20 away from the current root.
+                if (z.Count() > 0)
+                {
+                    var minValues = z.ToArray().MinBy(x => Math.Abs((double)x.FunctionValue));
+                    var jk = minValues.Aggregate((curMin, x) => (curMin == null || (x.FunctionValue) <
+                        curMin.FunctionValue ? x : curMin));
+                    var existsInRealArray = arrayofroots.FindIndex(x => x == jk.countInArray);
+                    if (jk.countInArray != previousRoot)
+                    {
+                        arrayofroots.Add(jk.countInArray);
+                        previousRoot = jk.countInArray;
+                    }
+                }
+            }
             foreach (var k in arrayofroots.Distinct())
             {
                 //find value in the array...
                 Console.WriteLine(k + " is a unique root");
-
             }
+            jerk = Derivative(sensordata);
+            exportdata(jerk.ToList(), "Jerk", "m/s^3", arrayofroots.Distinct().ToList());
             var velocity = Integrate(createPoint(sensordata));
             var filteredVelocity = Butterworth(velocity.Select(x => x.Data).ToArray(), average, 0.1);
             exportdata(filteredVelocity.ToList(), "Velocity", "m/s");
+
+            exportdata(filteredAcceleration.ToList(), "Versnelling", "m/s^2", arrayofroots.Distinct().ToList());
 
             sensordata = new List<Sensor>();
             for (int k = 0; k < filteredVelocity.Count(); k++)
@@ -136,13 +155,17 @@ namespace ActTracker
             var filteredDistance = Butterworth(distance.Select(x => x.Data).ToArray(), average, 0.1);
             exportdata(filteredDistance.ToList(), "Position", "m");
         }
-        static float EPSILON = (float)0.00001;
+        static float EPSILON = (float)0.001;
 
         static List<int> arrayofroots = new List<int>();
+        static List<CustomDouble> foundRoots = new List<CustomDouble>();
+        static List<Double> originalDataDont = new List<double>();
+        static int previousRoot = 0;
         static void bisection(double a,
                        double b, List<Double> data)
         {
             var actualOriginal = a; // dont change
+            var actualOriginalB = b; // dont change
             var originalA = a;
             var originalB = b;
             var j = data[(int)Math.Round(a, 0)];
@@ -154,9 +177,8 @@ namespace ActTracker
                 {
                     if (j * k >= 0)
                     {
-                        j = data[(int)Math.Round(originalA + 1, 0)];
+                        j = data[(int)Math.Round(originalA, 0)];
                         k = data[(int)Math.Round(originalB - 1, 0)];
-                        originalA += 1;
                         originalB -= 1;
                     }
                     else
@@ -177,10 +199,10 @@ namespace ActTracker
                 {
                     // Find middle point 
                     c = (a + b) / 2;
-                    var nearest = data.ToArray().MinBy(x => Math.Abs((double)x - c));
-                    if (Math.Round(nearest.First(), 1) == 0.0)
+                    var nearest = data.ToArray().MinBy(x => Math.Abs((double)x - c)).ToList();
+                    if (Math.Round(nearest.First(), 3) == 0.000)
                         break;
-                    else if (nearest.First() * data[(int)Math.Round(a, 1)] < 0)
+                    else if (nearest.First() * data[(int)Math.Round(a, 3)] < 0)
                         b = c;
                     else
                         a = c;
@@ -188,30 +210,17 @@ namespace ActTracker
                 // prints value of c  
                 // upto 4 decimal places
                 double nearestDouble = 0.0;
-                if (arrayofroots.Count > 0)
-                {
-                    var z = arrayofroots.Select(x => x).ToArray().MinBy(x => Math.Abs((double)x - c));
-                    if (z.Count() > 0)
-                    {
-                        nearestDouble = z.First();
-                        if (Math.Abs(nearestDouble - c) < 10)
-                            Console.WriteLine("Root: " + c + " is nearest to: " + nearestDouble);
-                        else
-                            nearestDouble = 0.0;
-                    }
-                    else
-                        nearestDouble = 0.0;
-                }
-                if (nearestDouble == 0.0)
-                    arrayofroots.Add((int)Math.Round(c, 0));
-
-                int xroot = (int)Math.Round(c, 0);
-
+                foundRoots.Add(new CustomDouble { countInArray = (int)Math.Round(c, 0), FunctionValue = originalDataDont[(int)Math.Round(c, 0)] });
+                int xroot = (int)Math.Round(c, 3);
                 var newData = data;
                 newData.Remove(newData[xroot]);
                 bisection(actualOriginal, newData.Count - 1, newData);
             }
-
+        }
+         class CustomDouble
+        {
+            public int countInArray { get; set; }
+            public double FunctionValue { get; set; }
         }
         static List<double> Derivative(List<Sensor> args)
         {
@@ -271,7 +280,7 @@ namespace ActTracker
             return FunctionValues;
         }
 
-        private static void exportdata(List<double> states, string name, string unit, double[] second = null)
+        private static void exportdata(List<double> states, string name, string unit, List<int> second = null)
         {
             System.Text.StringBuilder sb = new System.Text.StringBuilder();
             sb.AppendLine($"{name}");
@@ -303,10 +312,30 @@ namespace ActTracker
                 (from x in Enumerable.Range(0, states.Count()) select (double)x).ToArray(),
                 (from p in states select (double)p).ToArray()
             );
+            if(second != null)
+            {
+                pl.col0(4);
+                var Roots = GetListFromIndices(second, states);
+                pl.poin(
+                 (from x in second select (double)x).ToArray(),
+                 (from p in Roots select (double)p).ToArray(),
+                 '.'
+             );
+            }
             string csv = String.Join(",", states.Select(x => x.ToString()).ToArray());
             pl.eop();
 
 
+        }
+
+        static List<double> GetListFromIndices(List<int> indices, List<double> source)
+        {
+            List<double> toREturn = new List<double>();
+            foreach(var k in indices)
+            {
+                toREturn.Add(source[k]);
+            }
+            return toREturn;
         }
 
         public static double[] functionValues(int count, double a, double b)
