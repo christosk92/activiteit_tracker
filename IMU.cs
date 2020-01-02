@@ -1,20 +1,13 @@
-﻿using Microsoft.ML.Data;
-using System.IO;
+﻿using Accord;
+using Accord.Math;
 using Microsoft.ML;
-using System.Linq;
-using MathNet.Numerics.LinearAlgebra;
-using MathNet.Numerics.LinearAlgebra.Double;
-using MathNet.Numerics.LinearAlgebra.Factorization;
+using Microsoft.ML.Data;
+using MoreLinq;
+using PLplot;
 using System;
 using System.Collections.Generic;
-using PLplot;
-using Accord;
-using MathNet.Numerics.Integration;
-using Accord.Statistics.Models.Regression.Fitting;
-using Accord.Math.Optimization;
-using Accord.Statistics.Kernels;
-using Accord.Math;
-using MoreLinq;
+using System.IO;
+using System.Linq;
 
 namespace ActTracker
 {
@@ -37,7 +30,7 @@ namespace ActTracker
         public double Time;
         public double Data;
     }
-  
+
     class IMU
     {
         public static double[] Butterworth(double[] indata, double deltaTimeinsec, double CutOff)
@@ -59,7 +52,7 @@ namespace ActTracker
 
             const double pi = Math.PI;
             double wc = Math.Tan(CutOff * pi / Samplingrate);
-            double k1 = Math.Sqrt(2) /2 * wc;
+            double k1 = Math.Sqrt(2) / 2 * wc;
             double k2 = wc * wc;
             double a = k2 / (1 + k1 + k2);
             double b = 2 * a;
@@ -109,10 +102,10 @@ namespace ActTracker
             var accelerations = mlContext.Data.CreateEnumerable<SensorData>(dataView, reuseRowObject: false).ToList();
             var time = accelerations.Select(x => x.Time).ToList();
             List<Sensor> sensordata = new List<Sensor>();
-            exportdata(accelerations.Select(x=> x.Acceleration_x).ToList(), "Versnelling_Unfiltered", "m/s^2");
+            exportdata(accelerations.Select(x => x.Acceleration_x).ToList(), "Versnelling_Unfiltered", "m/s^2");
             List<double> difference = new List<double>();
             for (int k = 1; k < accelerations.Count; k++)
-                difference.Add(accelerations[k].Time - accelerations[k -1 ].Time);
+                difference.Add(accelerations[k].Time - accelerations[k - 1].Time);
             var average = difference.Sum(x => x) / difference.Count();
             var filteredAcceleration = Butterworth(accelerations.Select(x => x.Acceleration_x).ToArray(), average, 2);
             exportdata(filteredAcceleration.ToList(), "Versnelling", "m/s^2");
@@ -126,7 +119,9 @@ namespace ActTracker
             bisection(0, jerk.Count() - 1, jerk);
             foreach (var k in arrayofroots.Distinct())
             {
-                Console.WriteLine(k);
+                //find value in the array...
+                Console.WriteLine(k + " is a unique root");
+
             }
             var velocity = Integrate(createPoint(sensordata));
             var filteredVelocity = Butterworth(velocity.Select(x => x.Data).ToArray(), average, 0.1);
@@ -138,7 +133,7 @@ namespace ActTracker
                 sensordata.Add(new Sensor { Time = Convert.ToDouble(time[k]), Data = Convert.ToDouble(filteredVelocity[k]) }); ;
             }
             var distance = Integrate(createPoint(sensordata));
-            var filteredDistance = Butterworth(distance.Select(x=> x.Data).ToArray(), average, 0.1);
+            var filteredDistance = Butterworth(distance.Select(x => x.Data).ToArray(), average, 0.1);
             exportdata(filteredDistance.ToList(), "Position", "m");
         }
         static float EPSILON = (float)0.00001;
@@ -147,6 +142,7 @@ namespace ActTracker
         static void bisection(double a,
                        double b, List<Double> data)
         {
+            var actualOriginal = a; // dont change
             var originalA = a;
             var originalB = b;
             var j = data[(int)Math.Round(a, 0)];
@@ -164,63 +160,67 @@ namespace ActTracker
                         originalB -= 1;
                     }
                     else
-                    {
                         invalidRoot = false;
-                    }
                 }
                 else
-                {
                     break;
-                }
             }
             if (originalB > originalA)
             {
                 if (j * k >= 0)
                 {
-                    Console.WriteLine("You have not assumed" +
-                                            " right a and b");
+                    Console.WriteLine("wrong a and b");
                     return;
                 }
-
                 double c = a;
                 while ((b - a) >= EPSILON)
                 {
                     // Find middle point 
                     c = (a + b) / 2;
-
-                    // Check if middle  
-                    // point is root 
-                    var nearest = data.Select(x => x).ToArray().MinBy(x => Math.Abs((double)x - c));
+                    var nearest = data.ToArray().MinBy(x => Math.Abs((double)x - c));
                     if (Math.Round(nearest.First(), 1) == 0.0)
                         break;
-
-                    // Decide the side  
-                    // to repeat the steps 
                     else if (nearest.First() * data[(int)Math.Round(a, 1)] < 0)
                         b = c;
                     else
                         a = c;
                 }
-
                 // prints value of c  
-                // upto 4 decimal places 
-                arrayofroots.Add((int)Math.Round(c, 0));
+                // upto 4 decimal places
+                double nearestDouble = 0.0;
+                if (arrayofroots.Count > 0)
+                {
+                    var z = arrayofroots.Select(x => x).ToArray().MinBy(x => Math.Abs((double)x - c));
+                    if (z.Count() > 0)
+                    {
+                        nearestDouble = z.First();
+                        if (Math.Abs(nearestDouble - c) < 10)
+                            Console.WriteLine("Root: " + c + " is nearest to: " + nearestDouble);
+                        else
+                            nearestDouble = 0.0;
+                    }
+                    else
+                        nearestDouble = 0.0;
+                }
+                if (nearestDouble == 0.0)
+                    arrayofroots.Add((int)Math.Round(c, 0));
+
                 int xroot = (int)Math.Round(c, 0);
 
                 var newData = data;
                 newData.Remove(newData[xroot]);
-                bisection(originalA, newData.Count - 1, newData);
+                bisection(actualOriginal, newData.Count - 1, newData);
             }
 
         }
         static List<double> Derivative(List<Sensor> args)
         {
             List<double> jp = new List<double>();
-            for(int i = 0; i < args.Count; i++)
+            for (int i = 0; i < args.Count; i++)
             {
                 if (i != 0)
                 {
-                    var dt = args[i].Time - args[i-1].Time;
+                    var dt = args[i].Time - args[i - 1].Time;
                     var result = (args[i].Data - args[i - 1].Data) / dt;
                     jp.Add(result);
                 }
@@ -232,7 +232,7 @@ namespace ActTracker
             }
             return jp;
         }
-     
+
         private static List<Point> createPoint(List<Sensor> l)
         {
             List<Point> p = new List<Point>();
@@ -245,7 +245,7 @@ namespace ActTracker
         private static List<Sensor> function(int count)
         {
             var lk = new List<Sensor>();
-            for(int j = 0; j < count + 1; j++)
+            for (int j = 0; j < count + 1; j++)
             {
                 var result = j * j;
                 lk.Add(new Sensor { Data = result, Time = j });
@@ -277,7 +277,7 @@ namespace ActTracker
             sb.AppendLine($"{name}");
             foreach (var item in states)
             {
-                sb.AppendLine(item.ToString() +",");
+                sb.AppendLine(item.ToString() + ",");
             }
 
             System.IO.File.WriteAllText(
@@ -308,7 +308,7 @@ namespace ActTracker
 
 
         }
-     
+
         public static double[] functionValues(int count, double a, double b)
         {
             List<double> arr = new List<double>();
