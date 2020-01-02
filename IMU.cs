@@ -14,6 +14,7 @@ using Accord.Statistics.Models.Regression.Fitting;
 using Accord.Math.Optimization;
 using Accord.Statistics.Kernels;
 using Accord.Math;
+using MoreLinq;
 
 namespace ActTracker
 {
@@ -118,11 +119,15 @@ namespace ActTracker
             sensordata = new List<Sensor>();
             for (int k = 0; k < filteredAcceleration.Count(); k++)
             {
-                sensordata.Add(new Sensor { Time = Convert.ToDouble(time[k]), Data = Convert.TsaoDouble(filteredAcceleration[k]) }); ;
+                sensordata.Add(new Sensor { Time = Convert.ToDouble(time[k]), Data = Convert.ToDouble(filteredAcceleration[k]) }); ;
             }
             var jerk = Derivative(sensordata);
             exportdata(jerk.ToList(), "Jerk", "m/s^3");
-
+            bisection(0, jerk.Count() - 1, jerk);
+            foreach (var k in arrayofroots.Distinct())
+            {
+                Console.WriteLine(k);
+            }
             var velocity = Integrate(createPoint(sensordata));
             var filteredVelocity = Butterworth(velocity.Select(x => x.Data).ToArray(), average, 0.1);
             exportdata(filteredVelocity.ToList(), "Velocity", "m/s");
@@ -136,7 +141,78 @@ namespace ActTracker
             var filteredDistance = Butterworth(distance.Select(x=> x.Data).ToArray(), average, 0.1);
             exportdata(filteredDistance.ToList(), "Position", "m");
         }
+        static float EPSILON = (float)0.00001;
 
+        static List<int> arrayofroots = new List<int>();
+        static void bisection(double a,
+                       double b, List<Double> data)
+        {
+            var originalA = a;
+            var originalB = b;
+            var j = data[(int)Math.Round(a, 0)];
+            var k = data[(int)Math.Round(b, 0)];
+            bool invalidRoot = true;
+            while (invalidRoot)
+            {
+                if (originalB > originalA)
+                {
+                    if (j * k >= 0)
+                    {
+                        j = data[(int)Math.Round(originalA + 1, 0)];
+                        k = data[(int)Math.Round(originalB - 1, 0)];
+                        originalA += 1;
+                        originalB -= 1;
+                    }
+                    else
+                    {
+                        invalidRoot = false;
+                    }
+                }
+                else
+                {
+                    break;
+                }
+            }
+            if (originalB > originalA)
+            {
+                if (j * k >= 0)
+                {
+                    Console.WriteLine("You have not assumed" +
+                                            " right a and b");
+                    return;
+                }
+
+                double c = a;
+                while ((b - a) >= EPSILON)
+                {
+                    // Find middle point 
+                    c = (a + b) / 2;
+
+                    // Check if middle  
+                    // point is root 
+                    var nearest = data.Select(x => x).ToArray().MinBy(x => Math.Abs((double)x - c));
+                    if (Math.Round(nearest.First(), 1) == 0.0)
+                        break;
+
+                    // Decide the side  
+                    // to repeat the steps 
+                    else if (nearest.First() * data[(int)Math.Round(a, 1)] < 0)
+                        b = c;
+                    else
+                        a = c;
+                }
+
+                // prints value of c  
+                // upto 4 decimal places 
+                arrayofroots.Add((int)Math.Round(c, 0));
+                int xroot = (int)Math.Round(c, 0);
+
+                var newData = data;
+                newData.Remove(newData[xroot]);
+                bisection(originalA, newData.Count - 1, newData);
+            }
+
+        }
         static List<double> Derivative(List<Sensor> args)
         {
             List<double> jp = new List<double>();
