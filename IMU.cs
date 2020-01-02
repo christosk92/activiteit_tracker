@@ -58,7 +58,7 @@ namespace ActTracker
 
             const double pi = 3.14159265358979;
             double wc = Math.Tan(CutOff * pi / Samplingrate);
-            double k1 = Math.Sqrt(2) * wc;
+            double k1 = Math.Sqrt(2) /2 * wc;
             double k2 = wc * wc;
             double a = k2 / (1 + k1 + k2);
             double b = 2 * a;
@@ -96,7 +96,7 @@ namespace ActTracker
             return data;
         }
 
-        static readonly string _dataPath = Path.Combine(Environment.CurrentDirectory, "rawdata.csv");
+        static readonly string _dataPath = Path.Combine(Environment.CurrentDirectory, "raw.csv");
 
         public static long? _docsize = 0;
         private static System.Timers.Timer aTimer;
@@ -108,34 +108,45 @@ namespace ActTracker
             var accelerations = mlContext.Data.CreateEnumerable<SensorData>(dataView, reuseRowObject: false).ToList();
             var time = accelerations.Select(x => x.Time).ToList();
             List<Sensor> sensordata = new List<Sensor>();
+            exportdata(accelerations.Select(x=> x.Acceleration_x).ToList(), "Versnelling_Unfiltered", "m/s^2");
+            List<double> difference = new List<double>();
+            for (int k = 1; k < accelerations.Count; k++)
+                difference.Add(accelerations[k].Time - accelerations[k -1 ].Time);
+            var average = difference.Sum(x => x) / difference.Count();
+            var filteredAcceleration = Butterworth(accelerations.Select(x => x.Acceleration_x).ToArray(), average, 0.5);
+            exportdata(filteredAcceleration.ToList(), "Versnelling", "m/s^2");
+            sensordata = new List<Sensor>();
+            for (int k = 0; k < filteredAcceleration.Count(); k++)
+            {
+                sensordata.Add(new Sensor { Time = Convert.ToDouble(time[k]), Data = Convert.ToDouble(filteredAcceleration[k]) }); ;
+            }
+            var jerk = Derivative(sensordata);
+            exportdata(jerk.ToList(), "Jerk", "m/s^3");
 
-            var filteredAcceleration = Butterworth(accelerations.Select(x => x.Acceleration_x).ToArray(), 0.01, 1);
-            exportdata(filteredAcceleration.ToList(), "butterworth");
+            var velocity = Integrate(createPoint(sensordata));
+            var filteredVelocity = Butterworth(velocity.Select(x => x.Data).ToArray(), average, 0.1);
+            exportdata(filteredVelocity.ToList(), "Velocity", "m/s");
 
+            sensordata = new List<Sensor>();
+            for (int k = 0; k < filteredVelocity.Count(); k++)
+            {
+                sensordata.Add(new Sensor { Time = Convert.ToDouble(time[k]), Data = Convert.ToDouble(filteredVelocity[k]) }); ;
+            }
+            var distance = Integrate(createPoint(sensordata));
+            var filteredDistance = Butterworth(distance.Select(x=> x.Data).ToArray(), average, 0.1);
+            exportdata(filteredDistance.ToList(), "Position", "m");
         }
+
         static List<double> Derivative(List<Sensor> args)
         {
             List<double> jp = new List<double>();
-            //f'(x) =  lim x--> 0 f(x+h)-f(x)/h
             for(int i = 0; i < args.Count; i++)
             {
                 if (i != 0)
                 {
                     var dt = args[i].Time - args[i-1].Time;
-                    if (dt != 0)
-                    {
-                        //dy/dt
-                        var res = (args[i].Data - args[i - 1].Data) / dt;
-                        if (Math.Round(res, 2) == 0.34)
-                        {
-                            Console.WriteLine("f");
-                        }
-                        jp.Add(res);
-                    }
-                    else
-                    {
-                        Console.Write("");
-                    }
+                    var result = (args[i].Data - args[i - 1].Data) / dt;
+                    jp.Add(result);
                 }
                 else
                 {
@@ -145,6 +156,7 @@ namespace ActTracker
             }
             return jp;
         }
+     
         private static List<Point> createPoint(List<Sensor> l)
         {
             List<Point> p = new List<Point>();
@@ -183,7 +195,7 @@ namespace ActTracker
             return FunctionValues;
         }
 
-        private static void exportdata(List<double> states, string name)
+        private static void exportdata(List<double> states, string name, string unit, double[] second = null)
         {
             System.Text.StringBuilder sb = new System.Text.StringBuilder();
             sb.AppendLine($"{name}");
@@ -209,8 +221,8 @@ namespace ActTracker
                 AxisBox.BoxTicksLabelsAxes);    // draw box, ticks, and num ticks
             pl.lab(
                 "Sample",                         // x-axis label
-                "m/s^2",                        // y-axis label
-                "versnelling");     // plot title
+                unit,                        // y-axis label
+                name);     // plot title
             pl.line(
                 (from x in Enumerable.Range(0, states.Count()) select (double)x).ToArray(),
                 (from p in states select (double)p).ToArray()
@@ -221,6 +233,13 @@ namespace ActTracker
 
         }
      
+        public static double[] functionValues(int count, double a, double b)
+        {
+            List<double> arr = new List<double>();
+            for (int j = 0; j < count + 1; j++)
+                arr.Add(a * j + b);
+            return arr.ToArray();
+        }
         public struct Measurement
         {
             private double variance;
