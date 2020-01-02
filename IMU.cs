@@ -56,7 +56,7 @@ namespace ActTracker
             Dat2[1] = Dat2[0] = indata[0];
             Dat2[dF2 + 3] = Dat2[dF2 + 2] = indata[dF2];
 
-            const double pi = 3.14159265358979;
+            const double pi = Math.PI;
             double wc = Math.Tan(CutOff * pi / Samplingrate);
             double k1 = Math.Sqrt(2) /2 * wc;
             double k2 = wc * wc;
@@ -113,12 +113,12 @@ namespace ActTracker
             for (int k = 1; k < accelerations.Count; k++)
                 difference.Add(accelerations[k].Time - accelerations[k -1 ].Time);
             var average = difference.Sum(x => x) / difference.Count();
-            var filteredAcceleration = Butterworth(accelerations.Select(x => x.Acceleration_x).ToArray(), average, 0.5);
+            var filteredAcceleration = Butterworth(accelerations.Select(x => x.Acceleration_x).ToArray(), average, 2);
             exportdata(filteredAcceleration.ToList(), "Versnelling", "m/s^2");
             sensordata = new List<Sensor>();
             for (int k = 0; k < filteredAcceleration.Count(); k++)
             {
-                sensordata.Add(new Sensor { Time = Convert.ToDouble(time[k]), Data = Convert.ToDouble(filteredAcceleration[k]) }); ;
+                sensordata.Add(new Sensor { Time = Convert.ToDouble(time[k]), Data = Convert.TsaoDouble(filteredAcceleration[k]) }); ;
             }
             var jerk = Derivative(sensordata);
             exportdata(jerk.ToList(), "Jerk", "m/s^3");
