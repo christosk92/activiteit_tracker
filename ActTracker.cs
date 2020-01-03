@@ -118,7 +118,6 @@ namespace ActTracker
             var jerk = Derivative(sensordata);
             originalDataDont = jerk.ToList();
             bisection(1, jerk.Count() - 1, jerk);
-
             for (int i = 0; i < foundRoots.Count - 1; i += 15)
             {
                 var z = foundRoots.Where(x => Math.Abs(x.countInArray - i) < 15); //find all poins that are a distance 20 away from the current root.
@@ -139,7 +138,7 @@ namespace ActTracker
                                 max = false;
                             else
                                 max = true;
-                            maxOrMins.Add(new CustomBool { index = jk.countInArray, Max = max});
+                            maxOrMins.Add(new CustomBool { index = jk.countInArray, Max = max });
                             previousRoot = jk.countInArray;
                         }
                     }
@@ -155,21 +154,27 @@ namespace ActTracker
                 else
                     type = "Minimum";
                 Console.WriteLine($"Sample {k.index} is a {type}");
-            } 
+            }
             //F = ma... 
             double m = 80;
             for (int j = 0; j < maxOrMins.Count - 1; j++)
             {
-                if (maxOrMins[j].Max)
+                if (!maxOrMins[j].Max)
                 {
-                    Force.Add(new CustomDouble2 { countEnd = (int)maxOrMins[j + 1].index, countStart = (int)maxOrMins[j].index, Value = m * (filteredAcceleration.ToList()[(int)maxOrMins[j + 1].index] - filteredAcceleration.ToList()[(int)maxOrMins[j].index]) });
+                    Force.Add(new CustomDouble2 { countEnd = (int)maxOrMins[j + 1].index, countStart = (int)maxOrMins[j].index, Value = (filteredAcceleration.ToList()[(int)maxOrMins[j + 1].index] - filteredAcceleration.ToList()[(int)maxOrMins[j].index]) });
                 }
             }
 
             jerk = Derivative(sensordata);
             exportdata(jerk.ToList(), "Jerk", "m/s^3", arrayofroots.Distinct().ToList());
             var velocity = Integrate(createPoint(sensordata));
-            var filteredVelocity = Butterworth(velocity.Select(x => x.Data).ToArray(), average, 0.1);
+            var lowPass = new FilterButterworth((float)0.2, (int)Math.Round(1 / average, 0), FilterButterworth.PassType.Highpass, (float)Math.Sqrt(2));
+            List<double> filteredVelocity = new List<double>();
+            foreach(var k in velocity)
+            {
+                lowPass.Update((float)k.Data);
+                filteredVelocity.Add(lowPass.Value);
+            }
             exportdata(filteredVelocity.ToList(), "Velocity", "m/s");
 
             exportdata(filteredAcceleration.ToList(), "Versnelling", "m/s^2", arrayofroots.Distinct().ToList());
@@ -184,18 +189,14 @@ namespace ActTracker
             List<double> WorkDone = new List<double>();
             for (int k = 0; k < Force.Count; k++)
             {
-                //b-a on a time interval...
-                //Polling frequency = 100 Hz --> 1 sample = 0.01s
-                var PositionB = distance[Force[k].countEnd].Data;
-                var PositionA = distance[Force[k].countStart].Data;
-                WorkDone.Add(Math.Abs(Force[k].Value) * Math.Abs((PositionB - PositionA)));
+                var timePassed = (time[Force[k].countEnd] - time[Force[k].countStart]);
+                var workDoneJminKg = -4.65 + 0.8537 * (20.3 + 0.6401 * Force[k].Value);
+                var workDone = workDoneJminKg * 80 * timePassed * 0.000239;
+                WorkDone.Add(workDone);
             }
-            //1 J = 0.000239 KCal
-            //x J = y kCal
-            //y = x * 0.000239 / 1
-            Console.WriteLine("Work done: " + WorkDone.Sum(x => x) * 0.000239 + " KCal");
-            var filteredDistance = Butterworth(distance.Select(x => x.Data).ToArray(), average, 0.1);
-            exportdata(filteredDistance.ToList(), "Position", "m");
+            Console.WriteLine("Work done: " + WorkDone.Sum(x => x) + " KCal");
+
+            exportdata(distance.Select(x=> x.Data).ToList(), "Position", "m");
         }
         public class CustomBool
         {
