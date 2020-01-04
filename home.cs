@@ -26,7 +26,7 @@ namespace ActTracker
     }
     public static class home
     {
-        static readonly string _dataPath = Path.Combine("D", "linacc.csv");
+        static readonly string _dataPath = Path.Combine("/D/", "linacc.csv");
         static List<CustomDouble> foundRoots = new List<CustomDouble>();
         public static async Task Main(string[] args)
         {
