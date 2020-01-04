@@ -4,6 +4,7 @@ using ActTracker.Models;
 using Docker.DotNet;
 using Docker.DotNet.Models;
 using Microsoft.ML;
+using Microsoft.ML.Data;
 using MoreLinq;
 using PLplot;
 using System;
@@ -26,9 +27,32 @@ namespace ActTracker
             return list;
         }
     }
+    public class WheelD
+    {
+        [LoadColumn(0)]
+        public double Time;
+        [LoadColumn(1)]
+        public double GyorX;
+        [LoadColumn(2)]
+        public double GyroY;
+        [LoadColumn(3)]
+        public double GyorZ;
+        [LoadColumn(4)]
+        public double Accx;
+        [LoadColumn(5)]
+        public double Accy;
+        [LoadColumn(6)]
+        public double Accz;
+        [LoadColumn(4)]
+        public double Bx;
+        [LoadColumn(5)]
+        public double By;
+        [LoadColumn(6)]
+        public double Bz;
+    }
     public static class home
     {
-        static readonly string linAccOriginal = Path.Combine("/D/", "acc_export", "acceleration_output.csv");
+        static readonly string linAccOriginal = Path.Combine("/D/", "acc_export", "sensor_accelerations.csv");
         static readonly string counts_path = Path.Combine("/D/", "acc_export", "activity_counts.csv");
         static readonly string wheel_path = Path.Combine("/D/", "acc_export", "wheel.csv");
 
@@ -44,11 +68,10 @@ namespace ActTracker
 
             //load data from python export
             IDataView counts = mlContext.Data.LoadFromTextFile<linnaccpy>(path: counts_path, hasHeader: true);
-            var acc_counts = mlContext.Data.CreateEnumerable<linnaccpy>(counts, reuseRowObject: false).ToList();
-
+            var acc_counts = mlContext.Data.CreateEnumerable<linnaccpy>(counts, reuseRowObject: false).ToList(); 
             //load data from wheel export
-            IDataView wheelView = mlContext.Data.LoadFromTextFile<WheelData>(path: counts_path, hasHeader: true);
-            var wheeldata = mlContext.Data.CreateEnumerable<WheelData>(wheelView, reuseRowObject: false).ToList();
+            IDataView wheelView = mlContext.Data.LoadFromTextFile<WheelD>(path: wheel_path, hasHeader: true, separatorChar: ',');
+            var wheeldata = mlContext.Data.CreateEnumerable<WheelD>(wheelView, reuseRowObject: false).ToList();
 
             //Apply filter
             List<double> difference = new List<double>();
@@ -62,7 +85,9 @@ namespace ActTracker
                 sensordata.Add(new Sensor { Time = Convert.ToDouble(time[k]), Data = Convert.ToDouble(filteredAcceleration[k]) }); ;
             }
             var jerk = Derivative(sensordata);
+            List<CustomDouble> accelerationRoots = new List<CustomDouble>();
             bisection(1, filteredAcceleration.ToList().Count - 1, filteredAcceleration.ToList());
+            accelerationRoots = foundRoots.ToList();
             exportdata(filteredAcceleration.ToList(), "versnelling_filtered", "m/s^2", true, foundRoots.Select(x=> x.countInArray).ToList());
             List<CustomDouble> max = new List<CustomDouble>();
             for(int k = 0; k < foundRoots.Count; k++)
@@ -102,18 +127,41 @@ namespace ActTracker
             {
                 sb.AppendLine(item.ToString());
             }
+            string eulerAnglespath = Path.Combine("/D/", "acc_export", $"euler_angles.csv");
             System.IO.File.WriteAllText(
-                System.IO.Path.Combine("/D/", "acc_export", $"euler_angles.csv"),
+                eulerAnglespath,
                 sb.ToString());
 
-            //find counts min-1 
-            //var countsmin = acc_counts.Sum(x=> x.axis1) / acc_counts.Count;
+            //rotatie om y-as dus...
+            //load data from wheel export
+            IDataView eulerView = mlContext.Data.LoadFromTextFile<EulerData>(path: eulerAnglespath, hasHeader: true, separatorChar: ',');
+            var AnglesData = mlContext.Data.CreateEnumerable<EulerData>(eulerView, reuseRowObject: false).ToList(); // in deg
+            //perform bisection
+            var y2 = Butterworth(wheeldata.Select(x=> x.GyroY).ToArray(), averageWheelPeriod, 0.5);
+            List<double> angleTimes = new List<double>();
+            for(int k = 0; k < AnglesData.Count; k++)
+            {
+                angleTimes.Add(k * averageWheelPeriod);
+            }
+            bisection(1, y2.ToList().Count - 1, y2.ToList());
+            exportdata(y2.ToList(), "gyro", "rad/s", true, foundRoots.Select(x=> x.countInArray).ToList());
+            List<double> t = new List<double>();
+            for(int k = 0; k < accelerationRoots.Count - 1; k++)
+            {
+                var t2 = accelerationRoots[k + 1].countInArray;
+                var t1 = accelerationRoots[k].countInArray;
+                t.Add((t2 - t1) * average);
+            }
             var countsmin = 5413.7; // 7.242048 kilometers per hour
             double m = 80; // 80 kg
-            double r = .35; //35 cm
+            double r = 0.35; // wheel radius 35 cm
             //https://www.nature.com/articles/sc201533.pdf
             double EE = (0.0022 * countsmin + 3.13)/1000; // V02 (L min-1 kg-1)
-            double EEm = EE * m * 5 * (23.0/60.0);
+            double EEm = EE * m * 5 * (t.Sum()/60.0);
+
+            Console.WriteLine("Number of revolutions: " + (int)(foundRoots.Count / 2.0));
+            Console.WriteLine("Distance traveled: " + (int)((foundRoots.Count / 2.0) * 2 * Math.PI * r) + " m");
+            Console.WriteLine("Burned kcal: " + EEm);
         }
         static List<double> Derivative(List<Sensor> args)
         {
@@ -299,7 +347,7 @@ namespace ActTracker
             }
             foreach (var k in three_points)
             {
-                if (k.average < .4 && k.average > -.4) // -2 < average < 2
+                if (k.average < .1 && k.average > -.1) // -2 < average < 2
                 {
                     //find which one in function_values is closest to zero..
                     //Min{Math.Abs(x), x = function_value}
