@@ -42,7 +42,7 @@ namespace ActTracker
                 });
             foreach(var j in containers)
             {
-                Console.WriteLine(j.ID[0]);
+                Console.WriteLine(j.ID[0] + " - "+ j.Names[0]);
             }
 
             //Load in data from sensor
