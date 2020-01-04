@@ -1,5 +1,7 @@
 ﻿using Accord;
 using ActTracker.Models;
+using Docker.DotNet;
+using Docker.DotNet.Models;
 using Microsoft.ML;
 using MoreLinq;
 using PLplot;
@@ -8,6 +10,7 @@ using System.Collections.Generic;
 using System.IO;
 using System.Linq;
 using System.Text;
+using System.Threading.Tasks;
 
 namespace ActTracker
 {
@@ -21,12 +24,27 @@ namespace ActTracker
             return list;
         }
     }
-    class home
+    public static class home
     {
         static readonly string _dataPath = Path.Combine(Environment.CurrentDirectory, "linacc.csv");
         static List<CustomDouble> foundRoots = new List<CustomDouble>();
-        static void Main(string[] args)
+        public static async Task Main(string[] args)
         {
+            //init docker configurations
+            string socket = "unix:///var/run/docker.sock"; //linux socket
+            var client = new DockerClientConfiguration(
+                 new Uri(socket))
+                 .CreateClient();
+            IList<ContainerListResponse> containers = await client.Containers.ListContainersAsync(
+                new ContainersListParameters()
+                {
+                    Limit = 10,
+                });
+            foreach(var j in containers)
+            {
+                Console.WriteLine(j.ID[0]);
+            }
+
             //Load in data from sensor
             MLContext mlContext = new MLContext();
             IDataView dataView = mlContext.Data.LoadFromTextFile<SensorData>(path: _dataPath, hasHeader: true, separatorChar: ',');
