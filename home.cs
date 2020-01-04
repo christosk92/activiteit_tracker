@@ -26,7 +26,7 @@ namespace ActTracker
     }
     public static class home
     {
-        static readonly string _dataPath = Path.Combine(Environment.CurrentDirectory, "linacc.csv");
+        static readonly string _dataPath = Path.Combine("D", "linacc.csv");
         static List<CustomDouble> foundRoots = new List<CustomDouble>();
         public static async Task Main(string[] args)
         {
@@ -184,7 +184,8 @@ namespace ActTracker
                 sb.ToString());
             var test = states.Min(x => x);
             var pl = new PLStream();
-            pl.sdev("pngcairo");                // png rendering
+            pl.sdev("pngcairo");    
+            // png rendering
             pl.sfnam($"{name}.png");               // output filename
             pl.spal0("cmap0_alternate.pal");    // alternate color palette
             pl.init();
@@ -213,8 +214,6 @@ namespace ActTracker
             }
             string csv = String.Join(",", states.Select(x => x.ToString()).ToArray());
             pl.eop();
-
-
         }
 
         static List<double> GetListFromIndices(List<int> indices, List<double> source)
