@@ -1,4 +1,5 @@
 ﻿using Accord;
+using ActTracker.KalmanHelper;
 using ActTracker.Models;
 using Docker.DotNet;
 using Docker.DotNet.Models;
@@ -27,36 +28,28 @@ namespace ActTracker
     }
     public static class home
     {
-        static readonly string _dataPath = Path.Combine("/D/", "linacc.csv");
+        static readonly string linAccOriginal = Path.Combine("/D/", "acc_export", "acceleration_output.csv");
+        static readonly string counts_path = Path.Combine("/D/", "acc_export", "activity_counts.csv");
+        static readonly string wheel_path = Path.Combine("/D/", "acc_export", "wheel.csv");
+
         static List<CustomDouble> foundRoots = new List<CustomDouble>();
+
         public static async Task Main(string[] args)
         {
-            //init docker configurations
-            ContainerListResponse pythonContainer = new ContainerListResponse(); ;
-            DockerClient client = null;
-            try
-            {
-                string socket = "unix:///var/run/docker.sock"; //linux socket
-                client = new DockerClientConfiguration(
-                     new Uri(socket))
-                     .CreateClient();
-                IList<ContainerListResponse> containers = await client.Containers.ListContainersAsync(
-                    new ContainersListParameters()
-                    {
-                        Limit = 10,
-                    });
-                pythonContainer = containers.ToList().Find(x => x.Names[0].Contains("raw2count"));
-            }
-            catch (Exception ex)
-            {
-                Console.WriteLine("Machine is not running inside a docker container");
-            }
-
             //Load in data from sensor
             MLContext mlContext = new MLContext();
-            IDataView dataView = mlContext.Data.LoadFromTextFile<SensorData>(path: _dataPath, hasHeader: true, separatorChar: ',');
+            IDataView dataView = mlContext.Data.LoadFromTextFile<SensorData>(path: linAccOriginal, hasHeader: true, separatorChar: ',');
             var accelerations = mlContext.Data.CreateEnumerable<SensorData>(dataView, reuseRowObject: false).ToList();
             var time = accelerations.Select(x => x.Time).ToList();
+
+            //load data from python export
+            IDataView counts = mlContext.Data.LoadFromTextFile<linnaccpy>(path: counts_path, hasHeader: true);
+            var acc_counts = mlContext.Data.CreateEnumerable<linnaccpy>(counts, reuseRowObject: false).ToList();
+
+            //load data from wheel export
+            IDataView wheelView = mlContext.Data.LoadFromTextFile<WheelData>(path: counts_path, hasHeader: true);
+            var wheeldata = mlContext.Data.CreateEnumerable<WheelData>(wheelView, reuseRowObject: false).ToList();
+
             //Apply filter
             List<double> difference = new List<double>();
             for (int k = 1; k < accelerations.Count; k++)
@@ -68,20 +61,78 @@ namespace ActTracker
             {
                 sensordata.Add(new Sensor { Time = Convert.ToDouble(time[k]), Data = Convert.ToDouble(filteredAcceleration[k]) }); ;
             }
-            //find roots
-            bisection(1, filteredAcceleration.Count() - 1, filteredAcceleration.ToList());
-
-            //export for python script to go
-            exportdata(accelerations.Select(x => x.Acceleration_x).ToList(), "Versnelling_Unfiltered", "m/s^2");
-
-            //start container
-            Console.WriteLine("starting python script...");
-            if (client != null)
+            var jerk = Derivative(sensordata);
+            bisection(1, filteredAcceleration.ToList().Count - 1, filteredAcceleration.ToList());
+            exportdata(filteredAcceleration.ToList(), "versnelling_filtered", "m/s^2", true, foundRoots.Select(x=> x.countInArray).ToList());
+            List<CustomDouble> max = new List<CustomDouble>();
+            for(int k = 0; k < foundRoots.Count; k++)
             {
-                await client.Containers.StartContainerAsync(pythonContainer.ID, new ContainerStartParameters
-                {
-                }, CancellationToken.None);
+                //Find all max: //f'(t+h) < 0 and f'(t-h) > 0
+                int h = 5;
+                int tminh = foundRoots[k].countInArray - h;
+                int tplush = foundRoots[k].countInArray + h;
+                if (foundRoots[k].countInArray - h < 0)
+                    tminh = foundRoots[k].countInArray;
+                if (foundRoots[k].countInArray + h > foundRoots.Count - 1)
+                    tplush = foundRoots[k].countInArray + h;
+                if (jerk[tminh] > 0 && jerk[tplush] < 0)
+                    max.Add(foundRoots[k]);
             }
+
+            difference = new List<double>();
+            for (int k = 1; k < wheeldata.Count; k++)
+                difference.Add(wheeldata[k].Time - wheeldata[k - 1].Time);
+            var averageWheelPeriod = difference.Sum(x => x) / difference.Count();
+            MadgwickAHRS AHRS = new MadgwickAHRS((float)averageWheelPeriod, 1f);
+            List<string> eulerAngles = new List<string>(); //Z,Y,X
+            for (int i = 0; i < wheeldata.Count - 2; i++)
+            {
+                var k = wheeldata[i];
+                float[] a = { (float)k.Accy / (float)9.81, (float)k.Accz / (float)9.81, (float)k.Accx / (float)9.81 };
+                float[] g = { (float)k.GyroY, (float)k.GyorZ, (float)k.GyorX };
+                float[] B = { (float)k.By, (float)k.Bz, (float)k.Bx };
+                var e = new MagData(g, a, B);
+                AHRS.Update((e.Gyroscope[0]), (e.Gyroscope[1]), (e.Gyroscope[2]), e.Accelerometer[0], e.Accelerometer[1], e.Accelerometer[2]);
+                var z = (new QuaternionData(AHRS.Quaternion)).ConvertToConjugate().ConvertToEulerAnglesCSVstring();
+                eulerAngles.Add(z);
+            }
+            System.Text.StringBuilder sb = new System.Text.StringBuilder();
+            sb.AppendLine($"Z,Y,X");
+            foreach (var item in eulerAngles)
+            {
+                sb.AppendLine(item.ToString());
+            }
+            System.IO.File.WriteAllText(
+                System.IO.Path.Combine("/D/", "acc_export", $"euler_angles.csv"),
+                sb.ToString());
+
+            //find counts min-1 
+            //var countsmin = acc_counts.Sum(x=> x.axis1) / acc_counts.Count;
+            var countsmin = 5413.7; // 7.242048 kilometers per hour
+            double m = 80; // 80 kg
+            double r = .35; //35 cm
+            //https://www.nature.com/articles/sc201533.pdf
+            double EE = (0.0022 * countsmin + 3.13)/1000; // V02 (L min-1 kg-1)
+            double EEm = EE * m * 5 * (23.0/60.0);
+        }
+        static List<double> Derivative(List<Sensor> args)
+        {
+            List<double> jp = new List<double>();
+            for (int i = 0; i < args.Count - 1; i++)
+            {
+                if (i != 0)
+                {
+                    var dt = args[i].Time - args[i - 1].Time;
+                    var result = (args[i].Data - args[i - 1].Data) / dt;
+                    jp.Add(result);
+                }
+                else
+                {
+                    jp.Add(0);
+
+                }
+            }
+            return jp;
         }
         public static double[] Butterworth(double[] indata, double deltaTimeinsec, double CutOff)
         {
@@ -167,7 +218,7 @@ namespace ActTracker
             return FunctionValues;
         }
 
-        private static void exportdata(List<double> states, string name, string unit, List<int> second = null)
+        private static void exportdata(List<double> states, string name, string unit, bool Exportimage = false, List<int> second = null)
         {
             System.Text.StringBuilder sb = new System.Text.StringBuilder();
             sb.AppendLine($"x");
@@ -180,6 +231,40 @@ namespace ActTracker
             System.IO.File.WriteAllText(
                 System.IO.Path.Combine("/D/", "acc", $"linacc.csv"),
                 sb.ToString());
+            if (Exportimage)
+            {
+                var test = states.Min(x => x);
+                var pl = new PLStream();
+                pl.sdev("pngcairo");                // png rendering
+                pl.sfnam($"{name}.png");               // output filename
+                pl.spal0("cmap0_alternate.pal");    // alternate color palette
+                pl.init();
+                pl.env(
+                    0, states.Count,                          // x-axis range
+                     states.Min(x => x), states.Max(x => x),                         // y-axis range
+                    AxesScale.Independent,          // scale x and y independently
+                    AxisBox.BoxTicksLabelsAxes);    // draw box, ticks, and num ticks
+                pl.lab(
+                    "Sample",                         // x-axis label
+                    unit,                        // y-axis label
+                    name);     // plot title
+                pl.line(
+                    (from x in Enumerable.Range(0, states.Count()) select (double)x).ToArray(),
+                    (from p in states select (double)p).ToArray()
+                );
+                if (second != null)
+                {
+                    pl.col0(4);
+                    var Roots = GetListFromIndices(second, states);
+                    pl.poin(
+                     (from x in second select (double)x).ToArray(),
+                     (from p in Roots select (double)p).ToArray(),
+                     '!'
+                 );
+                }
+                string csv = String.Join(",", states.Select(x => x.ToString()).ToArray());
+                pl.eop();
+            }
         }
 
         static List<double> GetListFromIndices(List<int> indices, List<double> source)
@@ -194,6 +279,7 @@ namespace ActTracker
         static void bisection(double a,
                        double b, List<Double> data)
         {
+            foundRoots = new List<CustomDouble>();
             List<ThreePoints> three_points = new List<ThreePoints>();
             //{1,2,.... n}
             //take 3 points 
@@ -213,7 +299,7 @@ namespace ActTracker
             }
             foreach (var k in three_points)
             {
-                if (k.average < .1 && k.average > -.1) // -2 < average < 2
+                if (k.average < .4 && k.average > -.4) // -2 < average < 2
                 {
                     //find which one in function_values is closest to zero..
                     //Min{Math.Abs(x), x = function_value}
