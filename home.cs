@@ -10,6 +10,7 @@ using System.Collections.Generic;
 using System.IO;
 using System.Linq;
 using System.Text;
+using System.Threading;
 using System.Threading.Tasks;
 
 namespace ActTracker
@@ -31,18 +32,24 @@ namespace ActTracker
         public static async Task Main(string[] args)
         {
             //init docker configurations
-            string socket = "unix:///var/run/docker.sock"; //linux socket
-            var client = new DockerClientConfiguration(
-                 new Uri(socket))
-                 .CreateClient();
-            IList<ContainerListResponse> containers = await client.Containers.ListContainersAsync(
-                new ContainersListParameters()
-                {
-                    Limit = 10,
-                });
-            foreach(var j in containers)
+            ContainerListResponse pythonContainer = new ContainerListResponse(); ;
+            DockerClient client = null;
+            try
             {
-                Console.WriteLine(j.ID[0] + " - "+ j.Names[0]);
+                string socket = "unix:///var/run/docker.sock"; //linux socket
+                client = new DockerClientConfiguration(
+                     new Uri(socket))
+                     .CreateClient();
+                IList<ContainerListResponse> containers = await client.Containers.ListContainersAsync(
+                    new ContainersListParameters()
+                    {
+                        Limit = 10,
+                    });
+                pythonContainer = containers.ToList().Find(x => x.Names[0].Contains("raw2count"));
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine("Machine is not running inside a docker container");
             }
 
             //Load in data from sensor
@@ -63,27 +70,18 @@ namespace ActTracker
             }
             //find roots
             bisection(1, filteredAcceleration.Count() - 1, filteredAcceleration.ToList());
-            //find velocity
-            var velocity = Integrate(createPoint(sensordata));
-            var lowPass = new FilterButterworth((float)0.2, (int)Math.Round(1 / average, 0), FilterButterworth.PassType.Highpass, (float)Math.Sqrt(2));
-            List<double> filteredVelocity = new List<double>();
-            foreach (var k in velocity)
-            {
-                lowPass.Update((float)k.Data);
-                filteredVelocity.Add(lowPass.Value);
-            }
-            //find position
-            sensordata = new List<Sensor>();
-            for (int k = 0; k < filteredVelocity.Count(); k++)
-            {
-                sensordata.Add(new Sensor { Time = Convert.ToDouble(time[k]), Data = Convert.ToDouble(filteredVelocity[k]) }); ;
-            }
-            var distance = Integrate(createPoint(sensordata));
-            exportdata(distance.Select(x => x.Data).ToList(), "Position", "m");
-            exportdata(accelerations.Select(x => x.Acceleration_x).ToList(), "Versnelling_Unfiltered", "m/s^2");
-            exportdata(filteredAcceleration.ToList(), "Versnelling", "m/s^2", foundRoots.Select(x => x.countInArray).Distinct().ToList());
-            exportdata(filteredVelocity.ToList(), "Velocity", "m/s");
 
+            //export for python script to go
+            exportdata(accelerations.Select(x => x.Acceleration_x).ToList(), "Versnelling_Unfiltered", "m/s^2");
+
+            //start container
+            Console.WriteLine("starting python script...");
+            if (client != null)
+            {
+                await client.Containers.StartContainerAsync(pythonContainer.ID, new ContainerStartParameters
+                {
+                }, CancellationToken.None);
+            }
         }
         public static double[] Butterworth(double[] indata, double deltaTimeinsec, double CutOff)
         {
@@ -172,48 +170,16 @@ namespace ActTracker
         private static void exportdata(List<double> states, string name, string unit, List<int> second = null)
         {
             System.Text.StringBuilder sb = new System.Text.StringBuilder();
-            sb.AppendLine($"{name}");
+            sb.AppendLine($"x");
             foreach (var item in states)
             {
                 sb.AppendLine(item.ToString() + ",");
             }
-
+            Directory.CreateDirectory(System.IO.Path.Combine("/D/", "acc"));
+            Directory.CreateDirectory(System.IO.Path.Combine("/D/", "acc_export"));
             System.IO.File.WriteAllText(
-                System.IO.Path.Combine(
-                AppDomain.CurrentDomain.BaseDirectory, $"{name}.csv"),
+                System.IO.Path.Combine("/D/", "acc", $"linacc.csv"),
                 sb.ToString());
-            var test = states.Min(x => x);
-            var pl = new PLStream();
-            pl.sdev("pngcairo");    
-            // png rendering
-            pl.sfnam($"{name}.png");               // output filename
-            pl.spal0("cmap0_alternate.pal");    // alternate color palette
-            pl.init();
-            pl.env(
-                0, states.Count,                          // x-axis range
-                 states.Min(x => x), states.Max(x => x),                         // y-axis range
-                AxesScale.Independent,          // scale x and y independently
-                AxisBox.BoxTicksLabelsAxes);    // draw box, ticks, and num ticks
-            pl.lab(
-                "Sample",                         // x-axis label
-                unit,                        // y-axis label
-                name);     // plot title
-            pl.line(
-                (from x in Enumerable.Range(0, states.Count()) select (double)x).ToArray(),
-                (from p in states select (double)p).ToArray()
-            );
-            if (second != null)
-            {
-                pl.col0(4);
-                var Roots = GetListFromIndices(second, states);
-                pl.poin(
-                 (from x in second select (double)x).ToArray(),
-                 (from p in Roots select (double)p).ToArray(),
-                 '!'
-             );
-            }
-            string csv = String.Join(",", states.Select(x => x.ToString()).ToArray());
-            pl.eop();
         }
 
         static List<double> GetListFromIndices(List<int> indices, List<double> source)
