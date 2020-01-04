@@ -79,12 +79,7 @@ namespace ActTracker
                 difference.Add(accelerations[k].Time - accelerations[k - 1].Time);
             var average = difference.Sum(x => x) / difference.Count();
             var filteredAcceleration = Butterworth(accelerations.Select(x => x.Acceleration_x).ToArray(), average, 0.5);
-            var sensordata = new List<Sensor>();
-            for (int k = 0; k < filteredAcceleration.Count(); k++)
-            {
-                sensordata.Add(new Sensor { Time = Convert.ToDouble(time[k]), Data = Convert.ToDouble(filteredAcceleration[k]) }); ;
-            }
-            var jerk = Derivative(sensordata);
+            var jerk = Derivative(filteredAcceleration.ToList(), average);
             List<CustomDouble> accelerationRoots = new List<CustomDouble>();
             bisection(1, filteredAcceleration.ToList().Count - 1, filteredAcceleration.ToList());
             accelerationRoots = foundRoots.ToList();
@@ -145,14 +140,41 @@ namespace ActTracker
             }
             bisection(1, y2.ToList().Count - 1, y2.ToList());
             exportdata(y2.ToList(), "gyro", "rad/s", true, foundRoots.Select(x=> x.countInArray).ToList());
-            List<double> t = new List<double>();
-            for(int k = 0; k < accelerationRoots.Count - 1; k++)
+          
+            bisection(1, jerk.ToList().Count - 1, jerk.ToList());
+            exportdata(jerk.ToList(), "jerk", "m/s^3", true);
+
+            List<CustomBool> maxOrMins = new List<CustomBool>();
+            for (int j = 0; j < foundRoots.Count; j++)
             {
-                var t2 = accelerationRoots[k + 1].countInArray;
-                var t1 = accelerationRoots[k].countInArray;
-                t.Add((t2 - t1) * average);
+                //f'(t-h) >0 en f'(t+h) < 0 , waar h een klein getal is. (maxima)
+                int h = 5;
+                int k = foundRoots[j].countInArray;
+                bool IsMax = false;
+                int indexForPlus = k + h;
+                int indexForMin = k - h;
+                if (k + h > jerk.Count)
+                    indexForPlus = k;
+                else if (k - h < 0)
+                    indexForMin = k;
+                var jj = jerk[indexForPlus];
+                if (jerk[indexForMin] > 0 && jerk[indexForPlus] < 0)
+                    IsMax = true;
+                maxOrMins.Add(new CustomBool { index = k, Max = IsMax });
             }
-            var countsmin = 5413.7; // 7.242048 kilometers per hour
+            exportdata(filteredAcceleration.ToList(), "acc", "m/s^2", true, maxOrMins.Select(x=> (int)x.index).ToList());
+            List<double> t = new List<double>();
+            for (int k = 0; k < accelerationRoots.Count - 1; k++)
+            {
+                double averageXroot = (accelerationRoots[k + 1].countInArray + accelerationRoots[k].countInArray) / 2.0;
+                var nearestMaxima = maxOrMins.OrderBy(x => Math.Abs((int)x.index - (int)averageXroot)).First();
+                if (nearestMaxima.Max)
+                {
+                    var dt = (accelerationRoots[k + 1].countInArray - accelerationRoots[k].countInArray) * average;
+                    t.Add(dt);
+                }
+            }
+            var countsmin = 5413.7; // 7.242048 kilometers per hour/TO CHANGE WHEN WE GET WRIST ACCELERATIONS!
             double m = 80; // 80 kg
             double r = 0.35; // wheel radius 35 cm
             //https://www.nature.com/articles/sc201533.pdf
@@ -163,21 +185,20 @@ namespace ActTracker
             Console.WriteLine("Distance traveled: " + (int)((foundRoots.Count / 2.0) * 2 * Math.PI * r) + " m");
             Console.WriteLine("Burned kcal: " + EEm);
         }
-        static List<double> Derivative(List<Sensor> args)
+        static List<double> Derivative(List<double> args, double average)
         {
             List<double> jp = new List<double>();
             for (int i = 0; i < args.Count - 1; i++)
             {
                 if (i != 0)
                 {
-                    var dt = args[i].Time - args[i - 1].Time;
-                    var result = (args[i].Data - args[i - 1].Data) / dt;
+                    var dt = average;
+                    double result = (args[i] - args[i - 1]) / dt;
                     jp.Add(result);
                 }
                 else
                 {
                     jp.Add(0);
-
                 }
             }
             return jp;
