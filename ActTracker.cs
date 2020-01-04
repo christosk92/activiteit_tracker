@@ -30,6 +30,16 @@ namespace ActTracker
         public double Time;
         public double Data;
     }
+    static class Extensions
+    {
+        public static List<List<T>> SplitList<T>(this List<T> me, int size = 5)
+        {
+            var list = new List<List<T>>();
+            for (int i = 0; i < me.Count; i += size)
+                list.Add(me.GetRange(i, Math.Min(size, me.Count - i)));
+            return list;
+        }
+    }
 
     class IMU
     {
@@ -104,6 +114,7 @@ namespace ActTracker
             var time = accelerations.Select(x => x.Time).ToList();
             List<Sensor> sensordata = new List<Sensor>();
             exportdata(accelerations.Select(x => x.Acceleration_x).ToList(), "Versnelling_Unfiltered", "m/s^2");
+
             List<double> difference = new List<double>();
             for (int k = 1; k < accelerations.Count; k++)
                 difference.Add(accelerations[k].Time - accelerations[k - 1].Time);
@@ -118,33 +129,7 @@ namespace ActTracker
             var jerk = Derivative(sensordata);
             originalDataDont = jerk.ToList();
             bisection(1, jerk.Count() - 1, jerk);
-            for (int i = 0; i < foundRoots.Count - 1; i += 15)
-            {
-                var z = foundRoots.Where(x => Math.Abs(x.countInArray - i) < 15); //find all poins that are a distance 20 away from the current root.
-                if (z.Count() > 0)
-                {
-                    var minValues = z.ToArray().MinBy(x => Math.Abs((double)x.FunctionValue));
-                    var jk = minValues.Aggregate((curMin, x) => (curMin == null || (x.FunctionValue) <
-                        curMin.FunctionValue ? x : curMin));
-                    var existsInRealArray = arrayofroots.FindIndex(x => x == jk.countInArray);
-                    if (jk.countInArray != previousRoot)
-                    {
-                        int h = 3;
-                        if (((originalDataDont[jk.countInArray + h]) > 0 && (originalDataDont[jk.countInArray - h]) < 0) || ((originalDataDont[jk.countInArray + h]) < 0 && (originalDataDont[jk.countInArray - h]) > 0))
-                        {
-                            arrayofroots.Add(jk.countInArray);
-                            bool max = false;
-                            if ((originalDataDont[jk.countInArray + h]) > 0 && (originalDataDont[jk.countInArray - h]) < 0)
-                                max = false;
-                            else
-                                max = true;
-                            maxOrMins.Add(new CustomBool { index = jk.countInArray, Max = max });
-                            previousRoot = jk.countInArray;
-                        }
-                    }
-                }
-            }
-            List<CustomDouble2> Force = new List<CustomDouble2>();
+            List<CustomDouble2> ChangeInAccelerations = new List<CustomDouble2>();
             foreach (var k in maxOrMins.Distinct())
             {
                 //find value in the array...
@@ -161,12 +146,11 @@ namespace ActTracker
             {
                 if (!maxOrMins[j].Max)
                 {
-                    Force.Add(new CustomDouble2 { countEnd = (int)maxOrMins[j + 1].index, countStart = (int)maxOrMins[j].index, Value = (filteredAcceleration.ToList()[(int)maxOrMins[j + 1].index] - filteredAcceleration.ToList()[(int)maxOrMins[j].index]) });
+                    ChangeInAccelerations.Add(new CustomDouble2 { countEnd = (int)maxOrMins[j + 1].index, countStart = (int)maxOrMins[j].index, Value = (filteredAcceleration.ToList()[(int)maxOrMins[j + 1].index] - filteredAcceleration.ToList()[(int)maxOrMins[j].index]) });
                 }
             }
-
             jerk = Derivative(sensordata);
-            exportdata(jerk.ToList(), "Jerk", "m/s^3", arrayofroots.Distinct().ToList());
+            exportdata(jerk.ToList(), "Jerk", "m/s^3", foundRoots.Select(x=> x.countInArray).Distinct().ToList());
             var velocity = Integrate(createPoint(sensordata));
             var lowPass = new FilterButterworth((float)0.2, (int)Math.Round(1 / average, 0), FilterButterworth.PassType.Highpass, (float)Math.Sqrt(2));
             List<double> filteredVelocity = new List<double>();
@@ -187,15 +171,19 @@ namespace ActTracker
             var distance = Integrate(createPoint(sensordata));
 
             List<double> WorkDone = new List<double>();
-            for (int k = 0; k < Force.Count; k++)
+            for (int k = 0; k < ChangeInAccelerations.Count; k++)
             {
-                var timePassed = (time[Force[k].countEnd] - time[Force[k].countStart]);
-                var workDoneJminKg = -4.65 + 0.8537 * (20.3 + 0.6401 * Force[k].Value);
-                var workDone = workDoneJminKg * 80 * timePassed * 0.000239;
-                WorkDone.Add(workDone);
+                var timePassed = (time[ChangeInAccelerations[k].countEnd] - time[ChangeInAccelerations[k].countStart]);
+                //https://www.nature.com/articles/s41366-019-0352-x/tables/2
+                var x = ChangeInAccelerations[k].Value;
+                if (x > 0)
+                {
+                    var AEE = 5.01 + 1.000 * (13.4 + 0.5674*x);
+                    var workDoneKcal = m * (AEE * 0.000239006) * (timePassed / 60);
+                    WorkDone.Add(workDoneKcal);
+                }
             }
-            Console.WriteLine("Work done: " + WorkDone.Sum(x => x) + " KCal");
-
+            Console.WriteLine("Work done: " + WorkDone.Sum(x => x) + " kcal");
             exportdata(distance.Select(x=> x.Data).ToList(), "Position", "m");
         }
         public class CustomBool
@@ -203,69 +191,54 @@ namespace ActTracker
             public double index { get; set; }
             public bool Max { get; set; }
         }
-        static float EPSILON = (float)0.0001;
 
         static List<int> arrayofroots = new List<int>();
+        static List<Double> originalDataDont = new List<double>();
 
         static List<CustomDouble> foundRoots = new List<CustomDouble>();
-
-        static int previousRoot = 0;
-        static List<Double> originalDataDont = new List<double>();
-        static void bisection(double a,
-                           double b, List<Double> data)
+        static float EPSILON = (float)0.1;
+        static int originalArrayLength = 0;
+        static List<double> originalArray;
+        class ThreePoints
         {
-            var actualOriginal = a; // dont change
-            var actualOriginalB = b; // dont change
-            var originalA = a;
-            var originalB = b;
-            var j = data[(int)Math.Round(a, 0)];
-            var k = data[(int)Math.Round(b, 0)];
-            bool invalidRoot = true;
-            while (invalidRoot)
+            public List<CustomDouble> three_points { get; set; }
+            public double average { get; set; }
+        }
+        static void bisection(double a,
+                         double b, List<Double> data)
+        {
+            List<ThreePoints> three_points = new List<ThreePoints>();
+            //{1,2,.... n}
+            //take 3 points 
+            //{1,2,3} , {2,3,4} , {3,4,5}, .... ,{n-2, n-1, n}
+            //if -2 < average < 2 --> somewhat a root!
+            for (int j = 2; j < data.Count; j ++)
             {
-                if (originalB > originalA)
-                {
-                    if (j * k >= 0)
-                    {
-                        j = data[(int)Math.Round(originalA, 0)];
-                        k = data[(int)Math.Round(originalB - 1, 0)];
-                        originalB -= 1;
-                    }
-                    else
-                        invalidRoot = false;
-                }
-                else
-                    break;
+                ThreePoints x = new ThreePoints();
+                List<CustomDouble> z = new List<CustomDouble>();
+                z.Add(new CustomDouble { FunctionValue = data[j - 2], countInArray = j - 2 });
+                z.Add(new CustomDouble { FunctionValue = data[j - 1], countInArray = j - 1 });
+                z.Add(new CustomDouble { FunctionValue = data[j], countInArray = j });
+                var average = (z.Select(p => p.FunctionValue).Sum())/3;
+                x.average = average;
+                x.three_points = z;
+                three_points.Add(x);
             }
-            if (originalB > originalA)
+            foreach(var k in three_points)
             {
-                if (j * k >= 0)
+                if(k.average < 3 && k.average > -3) // -2 < average < 2
                 {
-                    Console.WriteLine("wrong a and b");
-                    return;
+                    //find which one in function_values is closest to zero..
+                    //Min{Math.Abs(x), x = function_value}
+                    var j = k.three_points.MinBy(p => Math.Abs(p.FunctionValue)).First();
+                    var findWithin5 = foundRoots.Where(x => Math.Abs(x.countInArray - j.countInArray) < 8);
+                    if (findWithin5.Count() == 0)
+                        foundRoots.Add(j);
                 }
-                double c = a;
-                while ((b - a) >= EPSILON)
-                {
-                    // Find middle point 
-                    c = (a + b) / 2;
-                    var nearest = data.ToArray().MinBy(x => Math.Abs((double)x - c)).ToList();
-                    if (Math.Round(nearest.First(), 3) == 0.000)
-                        break;
-                    else if (nearest.First() * data[(int)Math.Round(a, 3)] < 0)
-                        b = c;
-                    else
-                        a = c;
-                }
-                // prints value of c  
-                // upto 4 decimal places
-                double nearestDouble = 0.0;
-                foundRoots.Add(new CustomDouble { countInArray = (int)Math.Round(c, 0), FunctionValue = originalDataDont[(int)Math.Round(c, 0)] });
-                int xroot = (int)Math.Round(c, 3);
-                var newData = data;
-                newData.Remove(newData[xroot]);
-                bisection(actualOriginal, newData.Count - 1, newData);
             }
+            foreach (var j in foundRoots)
+                Console.WriteLine("Root : x = " + j.countInArray);
+
         }
         class CustomDouble
         {
@@ -281,7 +254,7 @@ namespace ActTracker
         static List<double> Derivative(List<Sensor> args)
         {
             List<double> jp = new List<double>();
-            for (int i = 0; i < args.Count; i++)
+            for (int i = 0; i < args.Count - 1; i++)
             {
                 if (i != 0)
                 {
@@ -322,7 +295,7 @@ namespace ActTracker
             List<Sensor> FunctionValues = new List<Sensor>();
             //v = v0 + a(t)dt
             //s = s0 + v(t)dt
-            for (int i = 0; i < p.Count; i++)
+            for (int i = 0; i < p.Count - 1; i++)
             {
                 if (i != 0)
                 {

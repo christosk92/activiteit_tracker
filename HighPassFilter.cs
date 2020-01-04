@@ -1,6 +1,4 @@
 ﻿using System;
-using System.Collections.Generic;
-using System.Text;
 
 namespace ActTracker
 {
@@ -44,6 +42,7 @@ namespace ActTracker
                     b1 = 2.0f * (1.0f - c * c) * a1;
                     b2 = (1.0f - resonance * c + c * c) * a1;
                     break;
+
                 case PassType.Highpass:
                     c = (float)Math.Tan(Math.PI * frequency / sampleRate);
                     a1 = 1.0f / (1.0f + resonance * c + c * c);
