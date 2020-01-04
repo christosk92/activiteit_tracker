@@ -173,7 +173,7 @@ namespace ActTracker
             sb.AppendLine($"x");
             foreach (var item in states)
             {
-                sb.AppendLine(item.ToString() + ",");
+                sb.AppendLine(item.ToString());
             }
             Directory.CreateDirectory(System.IO.Path.Combine("/D/", "acc"));
             Directory.CreateDirectory(System.IO.Path.Combine("/D/", "acc_export"));
