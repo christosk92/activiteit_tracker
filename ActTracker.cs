@@ -161,7 +161,7 @@ namespace ActTracker
             }
             exportdata(filteredVelocity.ToList(), "Velocity", "m/s");
 
-            exportdata(filteredAcceleration.ToList(), "Versnelling", "m/s^2", arrayofroots.Distinct().ToList());
+            exportdata(filteredAcceleration.ToList(), "Versnelling", "m/s^2", foundRoots.Select(x => x.countInArray).Distinct().ToList());
 
             sensordata = new List<Sensor>();
             for (int k = 0; k < filteredVelocity.Count(); k++)
@@ -231,7 +231,7 @@ namespace ActTracker
                     //find which one in function_values is closest to zero..
                     //Min{Math.Abs(x), x = function_value}
                     var j = k.three_points.MinBy(p => Math.Abs(p.FunctionValue)).First();
-                    var findWithin5 = foundRoots.Where(x => Math.Abs(x.countInArray - j.countInArray) < 8);
+                    var findWithin5 = foundRoots.Where(x => Math.Abs(x.countInArray - j.countInArray) < 15);
                     if (findWithin5.Count() == 0)
                         foundRoots.Add(j);
                 }
