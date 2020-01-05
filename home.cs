@@ -131,6 +131,11 @@ namespace ActTracker
             //load data from wheel export
             IDataView eulerView = mlContext.Data.LoadFromTextFile<EulerData>(path: eulerAnglespath, hasHeader: true, separatorChar: ',');
             var AnglesData = mlContext.Data.CreateEnumerable<EulerData>(eulerView, reuseRowObject: false).ToList(); // in deg
+            exportdata(AnglesData.Select(x => x.Z).ToList(), "z-theta", "deg", true);
+            exportdata(AnglesData.Select(x => x.Y).ToList(), "y-theta", "deg", true);
+            exportdata(AnglesData.Select(x => x.X).ToList(), "x-theta", "deg", true);
+
+
             //perform bisection
             var y2 = Butterworth(wheeldata.Select(x=> x.GyroY).ToArray(), averageWheelPeriod, 0.5);
             List<double> angleTimes = new List<double>();
